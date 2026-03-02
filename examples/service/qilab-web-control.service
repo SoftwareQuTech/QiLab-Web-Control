@@ -1,0 +1,20 @@
+[Unit]
+Description=Qilab Web Control (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/mrkolev/work/web_control_server/qilab_web_control
+Environment=QILAB_SERVICE=qilab.service
+Environment=QILAB_UI_TITLE=Qilab Control
+Environment=QILAB_LOG_PATH=/var/log/qilab/qilab.log
+Environment=QILAB_CONFIG_FILE=/etc/qilab/nodes.yaml
+Environment=QILAB_UPDATE_SCRIPT=/home/mrkolev/work/qilab/scripts/update_release.sh
+ExecStart=/home/mrkolev/work/web_control_server/qilab_web_control/env/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

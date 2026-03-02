@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <h1 class="title">{{ title }}</h1>
+        <p class="subtitle">Service: {{ service_name }}</p>
+      </header>
+
+      <nav class="tab-nav">
+        <a href="/?tab=control" class="tab-link {% if active_tab != 'config' %}tab-link-active{% endif %}">Control</a>
+        <a href="/?tab=config" class="tab-link {% if active_tab == 'config' %}tab-link-active{% endif %}">Config</a>
+      </nav>
+
+      {% if active_tab == 'config' %}
+        <section class="card">
+          <div class="label">Configuration file</div>
+          <div class="timestamp">Path: {{ config_file }}</div>
+          {% if config_parse_error %}
+            <pre class="log">{{ config_parse_error }}</pre>
+          {% else %}
+            <form method="post" action="/config/save" class="update-form">
+              <input type="hidden" name="field_count" value="{{ config_fields|length }}" />
+              {% if config_fields|length == 0 %}
+                <div class="timestamp">No fields found in YAML map.</div>
+              {% endif %}
+              {% for field in config_fields %}
+                <div class="field-row">
+                  <div class="field-name">{{ field.name }}</div>
+                  <input type="hidden" name="field_name_{{ loop.index0 }}" value="{{ field.name }}" />
+                  <input type="hidden" name="field_type_{{ loop.index0 }}" value="{{ field.type }}" />
+                  {% if field.type == "yaml" %}
+                    <textarea
+                      name="field_value_{{ loop.index0 }}"
+                      class="config-editor"
+                      spellcheck="false"
+                    >{{ field.value }}</textarea>
+                  {% else %}
+                    <input
+                      type="text"
+                      name="field_value_{{ loop.index0 }}"
+                      class="field-input"
+                      value="{{ field.value }}"
+                    />
+                  {% endif %}
+                </div>
+              {% endfor %}
+              <button type="submit" class="btn btn-upload">Save config + Restart service</button>
+            </form>
+          {% endif %}
+        </section>
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Last config save</span>
+            {% if config_result.ok is none %}
+              <span class="status">No run</span>
+            {% elif config_result.ok %}
+              <span class="status status-active">success</span>
+            {% else %}
+              <span class="status status-failed">failed</span>
+            {% endif %}
+          </div>
+          <div class="timestamp">Time: {{ config_result.timestamp }}</div>
+          <pre class="log">{{ config_result.output }}</pre>
+        </section>
+      {% else %}
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Status</span>
+            <span class="status status-{{ status|e }}">{{ status }}</span>
+          </div>
+          <div class="actions">
+            <form method="post" action="/start">
+              <button type="submit" class="btn btn-start">Start</button>
+            </form>
+            <form method="post" action="/restart">
+              <button type="submit" class="btn btn-restart">Restart</button>
+            </form>
+            <form method="post" action="/stop">
+              <button type="submit" class="btn btn-stop">Stop</button>
+            </form>
+          </div>
+          <div class="timestamp">Updated: {{ timestamp }}</div>
+        </section>
+
+        <section class="card">
+          <div class="label">QILAB_LOG_LEVEL</div>
+          <form method="post" action="/log-level" class="update-form">
+            <label class="field">
+              <span>Current: {{ current_log_level }}</span>
+              <select name="log_level" class="field-input">
+                {% for level in log_level_options %}
+                  <option value="{{ level }}" {% if current_log_level == level %}selected{% endif %}>{{ level }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit" class="btn btn-restart">Set level + Restart service</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Last log level change</span>
+            {% if log_level_result.ok is none %}
+              <span class="status">No run</span>
+            {% elif log_level_result.ok %}
+              <span class="status status-active">success</span>
+            {% else %}
+              <span class="status status-failed">failed</span>
+            {% endif %}
+          </div>
+          <div class="timestamp">Time: {{ log_level_result.timestamp }}</div>
+          <pre class="log">{{ log_level_result.output }}</pre>
+        </section>
+
+        <section class="card">
+          <div class="label">Upload and install release</div>
+          <form method="post" action="/update" enctype="multipart/form-data" class="update-form">
+            <label class="field">
+              <span>Version</span>
+              <input type="text" name="version" placeholder="0.0.3" required />
+            </label>
+            <label class="field">
+              <span>Tarball (.tar.gz)</span>
+              <input type="file" name="tarball" accept=".tar.gz" required />
+            </label>
+            <button type="submit" class="btn btn-upload">Upload + Update</button>
+          </form>
+          <div class="timestamp">Script: {{ update_script }}</div>
+        </section>
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Last update result</span>
+            {% if update_result.ok is none %}
+              <span class="status">No run</span>
+            {% elif update_result.ok %}
+              <span class="status status-active">success</span>
+            {% else %}
+              <span class="status status-failed">failed</span>
+            {% endif %}
+          </div>
+          <div class="timestamp">Version: {{ update_result.version }} | Time: {{ update_result.timestamp }}</div>
+          <pre class="log">{{ update_result.output }}</pre>
+        </section>
+
+        <section class="card">
+          <div class="label">qilab.log (auto-refresh 100ms)</div>
+          <div class="timestamp">Path: {{ log_path }} | <span id="log-updated">Updated: {{ timestamp }}</span></div>
+          <pre class="log" id="qilab-log">Loading log output...</pre>
+        </section>
+
+        <section class="card">
+          <div class="label">systemctl status</div>
+          <pre class="log">{{ details }}</pre>
+        </section>
+      {% endif %}
+    </main>
+    <script>
+      const logElement = document.getElementById("qilab-log");
+      const updatedElement = document.getElementById("log-updated");
+
+      async function refreshLog() {
+        if (!logElement || !updatedElement) {
+          return;
+        }
+
+        try {
+          const response = await fetch("/logs", { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const payload = await response.json();
+          const wasNearBottom =
+            logElement.scrollHeight - logElement.clientHeight - logElement.scrollTop < 24;
+
+          logElement.textContent = payload.content || "";
+          updatedElement.textContent = `Updated: ${payload.updated}`;
+
+          if (wasNearBottom) {
+            logElement.scrollTop = logElement.scrollHeight;
+          }
+        } catch (err) {
+          logElement.textContent = `Log refresh error: ${err}`;
+        }
+      }
+
+      refreshLog();
+      setInterval(refreshLog, 100);
+    </script>
+  </body>
+</html>
