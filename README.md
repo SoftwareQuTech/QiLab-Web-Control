@@ -35,16 +35,67 @@ sudo QILAB_SERVICE="$QILAB_SERVICE" \
 
 Open http://localhost:8000
 
-## Install as systemd service (recommended)
+## Debian deployment (Scenario 1: root systemd + venv)
+
+Install from the GitLab release wheel into a root-owned virtual environment, then run with `uvicorn` under `systemd`.
+
+1. Create app directory and venv:
 
 ```bash
-sudo cp <location of project>/examples/service/qilab-web-control.service /etc/systemd/system/
+sudo mkdir -p /opt/qilab-web-control
+sudo python3 -m venv /opt/qilab-web-control/venv
+sudo /opt/qilab-web-control/venv/bin/pip install --upgrade pip setuptools
+```
+
+2. Download and install the release wheel (replace version/tag as needed):
+
+```bash
+curl -L -o /tmp/qilab_web_control.whl "<gitlab-release-wheel-url>"
+sudo /opt/qilab-web-control/venv/bin/pip install /tmp/qilab_web_control.whl
+```
+
+3. Create a root-owned systemd unit:
+
+```bash
+sudo tee /etc/systemd/system/qilab-web-control.service >/dev/null <<'EOF'
+[Unit]
+Description=Qilab Web Control
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/qilab-web-control
+Environment=QILAB_SERVICE=qilab.service
+Environment=QILAB_UI_TITLE=Qilab Control
+Environment=QILAB_LOG_PATH=/var/log/qilab/qilab.log
+Environment=QILAB_UPDATE_SCRIPT=/usr/bin/local/update_release.sh
+Environment=QILAB_CONFIG_FILE=/etc/qilab/nodes.yaml
+ExecStart=/opt/qilab-web-control/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+4. Enable and start service:
+
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now qilab-web-control.service
 sudo systemctl status qilab-web-control.service --no-pager
 ```
 
-The service file runs the web control as root and starts automatically on boot.
+Open http://localhost:8000
+
+## Maintainer release workflow
+
+1. Update `CHANGELOG.md` with a section for the version you are releasing (for example `## [0.1.1] - 2026-03-03`).
+2. Ensure `setup.py` `version` exactly matches the release tag version without the `v` prefix.
+3. Push the version tag (format `vX.Y.Z`) to trigger build + GitLab release publication.
 
 ## Notes
 

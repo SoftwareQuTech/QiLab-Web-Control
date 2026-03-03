@@ -1,0 +1,171 @@
+stages:
+  - verify
+  - build
+  - release
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+    - if: '$CI_COMMIT_BRANCH'
+      when: always
+    - when: never
+
+.verify_rules: &verify_rules
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH'
+      when: on_success
+    - when: never
+
+.tag_only_rules: &tag_only_rules
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+      when: on_success
+    - when: never
+
+verify:smoke:
+  stage: verify
+  <<: *verify_rules
+  image: python:3.11-slim
+  script:
+    - python -m pip install --upgrade pip
+    - python -m pip install --upgrade setuptools
+    - pip install .
+    - python -c "import app.main"
+
+verify:tag_version:
+  stage: verify
+  <<: *tag_only_rules
+  image: python:3.11-slim
+  script:
+    - |
+      TAG_VERSION="${CI_COMMIT_TAG#v}"
+      SETUP_VERSION="$(python setup.py --version)"
+      if [ "$TAG_VERSION" != "$SETUP_VERSION" ]; then
+        echo "Error: tag version '$TAG_VERSION' does not match setup.py version '$SETUP_VERSION'."
+        exit 1
+      fi
+      echo "Tag version matches setup.py version: $SETUP_VERSION"
+
+build:dist:
+  stage: build
+  <<: *tag_only_rules
+  image: python:3.11-slim
+  script:
+    - python -m pip install --upgrade pip
+    - python -m pip install --upgrade build setuptools wheel
+    - python -m build
+  artifacts:
+    paths:
+      - dist/*
+    expire_in: 7 days
+
+release:notes:
+  stage: release
+  <<: *tag_only_rules
+  image: python:3.11-slim
+  script:
+    - |
+      VERSION="${CI_COMMIT_TAG#v}"
+      SECTION_REGEX="^##[[:space:]]*\\[?${VERSION}\\]?([[:space:]]*-.*)?$"
+
+      if ! grep -Eq "$SECTION_REGEX" CHANGELOG.md; then
+        echo "Error: CHANGELOG.md is missing section for version '${VERSION}'."
+        exit 1
+      fi
+
+      awk -v section_regex="$SECTION_REGEX" '
+        $0 ~ section_regex {in_section=1}
+        in_section && $0 ~ /^##[[:space:]]+/ && $0 !~ section_regex {exit}
+        in_section {print}
+      ' CHANGELOG.md > release-notes.md
+
+      if [ ! -s release-notes.md ]; then
+        echo "Error: failed to extract release notes for version '${VERSION}'."
+        exit 1
+      fi
+  artifacts:
+    paths:
+      - release-notes.md
+    expire_in: 7 days
+
+release:gitlab:
+  stage: release
+  <<: *tag_only_rules
+  image: python:3.11-slim
+  needs:
+    - job: build:dist
+      artifacts: true
+    - job: release:notes
+      artifacts: true
+  script:
+    - |
+      python - <<'PY'
+      import glob
+      import json
+      import os
+      import urllib.error
+      import urllib.request
+
+      tag = os.environ["CI_COMMIT_TAG"]
+      api_url = os.environ["CI_API_V4_URL"]
+      project_id = os.environ["CI_PROJECT_ID"]
+      project_url = os.environ["CI_PROJECT_URL"]
+
+      wheel_files = glob.glob("dist/*.whl")
+      sdist_files = glob.glob("dist/*.tar.gz")
+      if len(wheel_files) != 1 or len(sdist_files) != 1:
+        raise SystemExit(
+          f"Error: expected exactly one wheel and one source tar.gz in dist/, got wheels={len(wheel_files)} sdist={len(sdist_files)}"
+        )
+
+      wheel_name = os.path.basename(wheel_files[0])
+      sdist_name = os.path.basename(sdist_files[0])
+
+      with open("release-notes.md", "r", encoding="utf-8") as file:
+        release_notes = file.read().strip()
+      if not release_notes:
+        raise SystemExit("Error: release-notes.md is empty.")
+
+      wheel_url = f"{project_url}/-/jobs/artifacts/{tag}/raw/dist/{wheel_name}?job=build:dist"
+      sdist_url = f"{project_url}/-/jobs/artifacts/{tag}/raw/dist/{sdist_name}?job=build:dist"
+
+      payload = {
+        "name": tag,
+        "tag_name": tag,
+        "description": release_notes,
+        "assets": {
+          "links": [
+            {"name": wheel_name, "url": wheel_url, "link_type": "package"},
+            {"name": sdist_name, "url": sdist_url, "link_type": "package"},
+          ]
+        },
+      }
+
+      headers = {"Content-Type": "application/json"}
+      gitlab_token = os.getenv("GITLAB_TOKEN")
+      if gitlab_token:
+        headers["PRIVATE-TOKEN"] = gitlab_token
+      else:
+        headers["JOB-TOKEN"] = os.environ["CI_JOB_TOKEN"]
+
+      request = urllib.request.Request(
+        f"{api_url}/projects/{project_id}/releases",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+      )
+
+      try:
+        with urllib.request.urlopen(request) as response:
+          print(response.read().decode("utf-8"))
+      except urllib.error.HTTPError as error:
+        print(error.read().decode("utf-8"))
+        raise
+      PY
