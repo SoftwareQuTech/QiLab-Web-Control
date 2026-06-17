@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -15,6 +15,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import yaml
+
+from .config import paths as config_paths
+from .config import pipeline as config_pipeline
+from .config import schema as config_schema
 
 APP_ROOT = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(APP_ROOT / "templates"))
@@ -25,7 +29,6 @@ QILAB_LOG_PATH = Path(os.getenv("QILAB_LOG_PATH", "/var/log/qilab/qilab.log"))
 QILAB_LOG_LINES = int(os.getenv("QILAB_LOG_LINES", "200"))
 QILAB_UPDATE_SCRIPT = os.getenv("QILAB_UPDATE_SCRIPT", "/home/mrkolev/work/qilab/scripts/update_release.sh")
 QILAB_UPLOAD_DIR = Path(os.getenv("QILAB_UPLOAD_DIR", "/tmp/qilab_uploads"))
-QILAB_CONFIG_FILE = Path(os.getenv("QILAB_CONFIG_FILE", "/etc/qilab/nodes.yaml"))
 QILAB_LOG_LEVEL_OPTIONS = ("DEBUG", "ERROR", "OFF")
 
 app = FastAPI(title=UI_TITLE)
@@ -42,6 +45,12 @@ LAST_CONFIG_RESULT = {
     "ok": None,
     "timestamp": "",
     "output": "No config save has been run yet.",
+}
+
+LAST_SCHEMA_RESULT = {
+    "ok": None,
+    "timestamp": "",
+    "output": "Schema has not been reloaded yet.",
 }
 
 LAST_LOG_LEVEL_RESULT = {
@@ -101,9 +110,9 @@ def _run_update_script(version: str, tarball_path: Path) -> subprocess.Completed
     )
 
 
-def _read_config_file() -> str:
+def _safe_read_text(path: Path) -> str:
     try:
-        return QILAB_CONFIG_FILE.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return ""
     except Exception as exc:
@@ -127,51 +136,37 @@ def _current_log_level() -> str:
     return value if value in QILAB_LOG_LEVEL_OPTIONS else "OFF"
 
 
-def _load_config_yaml() -> Tuple[Dict[str, Any], str]:
+def _load_current_document(config_path: Path, schema) -> Tuple[Dict[str, Any], str]:
+    """Read the current config file into a doc for the form, with a UI notice.
+
+    Always returns a usable mapping: the parsed file when readable, otherwise a
+    blank default skeleton so the structured editor can still render.
+    """
     try:
-        raw_content = QILAB_CONFIG_FILE.read_text(encoding="utf-8")
+        raw_content = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}, ""
+        return config_schema.default_document(), "Config file does not exist yet; a new one will be created on save."
     except Exception as exc:
-        return {}, f"Failed to read config file: {exc}"
+        return config_schema.default_document(), f"Could not read config file: {exc}"
 
     if not raw_content.strip():
-        return {}, ""
+        return config_schema.default_document(), "Config file is empty; starting from a blank config."
 
     try:
         parsed = yaml.safe_load(raw_content)
     except Exception as exc:
-        return {}, f"Invalid YAML: {exc}"
+        return config_schema.default_document(), f"Current file is not valid YAML ({exc}); starting from a blank config."
 
-    if parsed is None:
-        return {}, ""
     if not isinstance(parsed, dict):
-        return {}, "Config root must be a key/value map."
+        return config_schema.default_document(), "Current file is not a key/value map; starting from a blank config."
 
-    return parsed, ""
-
-
-def _config_fields_from_yaml(data: Dict[str, Any]) -> List[Dict[str, str]]:
-    fields: List[Dict[str, str]] = []
-    for key, value in data.items():
-        if isinstance(value, (dict, list)):
-            rendered = yaml.safe_dump(value, sort_keys=False, default_flow_style=False).strip()
-            field_type = "yaml"
-        elif value is None:
-            rendered = ""
-            field_type = "scalar"
-        else:
-            rendered = str(value)
-            field_type = "scalar"
-
-        fields.append(
-            {
-                "name": str(key),
-                "value": rendered,
-                "type": field_type,
-            }
+    notice = ""
+    if schema is not None and config_schema.validate(parsed, schema):
+        notice = (
+            "Current config does not match the known schema (it may be a legacy format). "
+            "You can edit it below; saving rewrites it in the current format."
         )
-    return fields
+    return parsed, notice
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -179,8 +174,12 @@ def index(request: Request) -> HTMLResponse:
     info = _service_status()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     active_tab = request.query_params.get("tab", "control")
-    config_yaml, config_parse_error = _load_config_yaml()
-    config_fields = _config_fields_from_yaml(config_yaml)
+
+    schema, schema_source, schema_error = config_schema.get_schema()
+    resolution = config_paths.resolve_config(QILAB_SERVICE, systemctl=_run_systemctl)
+    document, config_notice = _load_current_document(resolution.path, schema)
+    config_raw = _safe_read_text(resolution.path) if schema is None else ""
+
     return TEMPLATES.TemplateResponse(
         "index.html",
         {
@@ -194,10 +193,17 @@ def index(request: Request) -> HTMLResponse:
             "update_result": LAST_UPDATE_RESULT,
             "update_script": QILAB_UPDATE_SCRIPT,
             "log_path": str(QILAB_LOG_PATH),
-            "config_file": str(QILAB_CONFIG_FILE),
             "config_result": LAST_CONFIG_RESULT,
-            "config_fields": config_fields,
-            "config_parse_error": config_parse_error,
+            "schema_result": LAST_SCHEMA_RESULT,
+            "config_path": str(resolution.path),
+            "config_path_source": resolution.source,
+            "config_notice": config_notice,
+            "schema_available": schema is not None,
+            "schema_source": schema_source,
+            "schema_error": schema_error,
+            "schema_obj": schema,
+            "document_obj": document,
+            "config_raw": config_raw,
             "log_level_options": QILAB_LOG_LEVEL_OPTIONS,
             "current_log_level": _current_log_level(),
             "log_level_result": LAST_LOG_LEVEL_RESULT,
@@ -273,69 +279,43 @@ async def update_binary(
 
 
 @app.post("/config/save")
-async def save_config(request: Request) -> RedirectResponse:
+async def save_config(request: Request) -> JSONResponse:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     if os.geteuid() != 0:
-        LAST_CONFIG_RESULT["ok"] = False
-        LAST_CONFIG_RESULT["timestamp"] = now
-        LAST_CONFIG_RESULT["output"] = "Config save aborted: web control must run as root."
-        return RedirectResponse(url="/?tab=config", status_code=303)
-
-    form = await request.form()
-    field_count_raw = str(form.get("field_count", "0"))
-    try:
-        field_count = int(field_count_raw)
-    except ValueError:
-        field_count = 0
-
-    next_config: Dict[str, Any] = {}
-    for index in range(field_count):
-        field_name = str(form.get(f"field_name_{index}", "")).strip()
-        field_type = str(form.get(f"field_type_{index}", "scalar")).strip()
-        field_value = str(form.get(f"field_value_{index}", ""))
-
-        if not field_name:
-            continue
-
-        try:
-            if field_type == "yaml":
-                parsed_value = yaml.safe_load(field_value) if field_value.strip() else None
-            else:
-                parsed_value = "" if field_value == "" else yaml.safe_load(field_value)
-        except Exception as exc:
-            LAST_CONFIG_RESULT["ok"] = False
-            LAST_CONFIG_RESULT["timestamp"] = now
-            LAST_CONFIG_RESULT["output"] = f"Invalid value for '{field_name}': {exc}"
-            return RedirectResponse(url="/?tab=config", status_code=303)
-
-        next_config[field_name] = parsed_value
-
-    serialized_config = yaml.safe_dump(next_config, sort_keys=False, default_flow_style=False)
+        LAST_CONFIG_RESULT.update(
+            ok=False, timestamp=now, output="Config save aborted: web control must run as root."
+        )
+        return JSONResponse(LAST_CONFIG_RESULT, status_code=403)
 
     try:
-        QILAB_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        QILAB_CONFIG_FILE.write_text(serialized_config, encoding="utf-8")
+        doc = await request.json()
     except Exception as exc:
-        LAST_CONFIG_RESULT["ok"] = False
-        LAST_CONFIG_RESULT["timestamp"] = now
-        LAST_CONFIG_RESULT["output"] = f"Failed to write config file: {exc}"
-        return RedirectResponse(url="/?tab=config", status_code=303)
+        LAST_CONFIG_RESULT.update(ok=False, timestamp=now, output=f"Invalid request body: {exc}")
+        return JSONResponse(LAST_CONFIG_RESULT, status_code=400)
 
-    restart_result = _run_systemctl("restart", QILAB_SERVICE)
-    if restart_result.returncode == 0:
-        LAST_CONFIG_RESULT["ok"] = True
-        LAST_CONFIG_RESULT["timestamp"] = now
-        LAST_CONFIG_RESULT["output"] = "Config saved and service restarted successfully."
+    resolution = config_paths.resolve_config(QILAB_SERVICE, systemctl=_run_systemctl)
+    schema, _, _ = config_schema.get_schema()
+    result = config_pipeline.save_config_doc(
+        doc,
+        config_path=resolution.path,
+        service=QILAB_SERVICE,
+        systemctl=_run_systemctl,
+        schema=schema,
+    )
+    LAST_CONFIG_RESULT.update(result)
+    return JSONResponse(LAST_CONFIG_RESULT)
+
+
+@app.post("/config/schema/reload")
+def reload_config_schema() -> RedirectResponse:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    schema, source, error = config_schema.get_schema(force=True)
+    if schema is None:
+        LAST_SCHEMA_RESULT.update(ok=False, timestamp=now, output=f"Failed to load schema: {error}")
     else:
-        LAST_CONFIG_RESULT["ok"] = False
-        LAST_CONFIG_RESULT["timestamp"] = now
-        LAST_CONFIG_RESULT["output"] = (
-            "Config saved, but service restart failed.\n"
-            + (restart_result.stdout or "")
-            + ("\n" + restart_result.stderr if restart_result.stderr else "")
-        ).strip()
-
+        suffix = f" (note: {error})" if error else ""
+        LAST_SCHEMA_RESULT.update(ok=True, timestamp=now, output=f"Schema reloaded from {source}.{suffix}")
     return RedirectResponse(url="/?tab=config", status_code=303)
 
 

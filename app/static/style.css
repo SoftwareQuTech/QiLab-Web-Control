@@ -216,6 +216,81 @@ body {
   font-size: 13px;
 }
 
+.notice {
+  background: #fbf3e2;
+  border: 1px solid #e7d3a8;
+  color: #6b5421;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.config-section,
+.node-block {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  margin: 12px 0;
+  background: #fcfaf6;
+}
+
+.array-block {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 10px 0;
+  background: #fff;
+}
+
+.config-subsection {
+  margin: 10px 0;
+}
+
+.arrays-wrap {
+  margin-top: 12px;
+}
+
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--muted);
+  margin: 8px 0;
+}
+
+.model-fields,
+.delay-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.config-actions {
+  margin-top: 16px;
+}
+
+.btn-add,
+.btn-remove {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.btn-add {
+  background: var(--start);
+}
+
+.btn-remove {
+  background: var(--stop);
+}
+
+.btn-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .log {
   background: #11100f;
   color: #f3efe9;

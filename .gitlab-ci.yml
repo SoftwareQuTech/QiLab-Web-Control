@@ -39,6 +39,16 @@ verify:smoke:
     - pip install .
     - python -c "import app.main"
 
+verify:tests:
+  stage: verify
+  <<: *verify_rules
+  image: python:3.11-slim
+  script:
+    - python -m pip install --upgrade pip
+    - python -m pip install --upgrade setuptools
+    - pip install ".[tests]"
+    - pytest -q
+
 verify:tag_version:
   stage: verify
   <<: *tag_only_rules

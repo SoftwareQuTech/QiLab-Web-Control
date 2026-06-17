@@ -21,39 +21,51 @@
       {% if active_tab == 'config' %}
         <section class="card">
           <div class="label">Configuration file</div>
-          <div class="timestamp">Path: {{ config_file }}</div>
-          {% if config_parse_error %}
-            <pre class="log">{{ config_parse_error }}</pre>
-          {% else %}
-            <form method="post" action="/config/save" class="update-form">
-              <input type="hidden" name="field_count" value="{{ config_fields|length }}" />
-              {% if config_fields|length == 0 %}
-                <div class="timestamp">No fields found in YAML map.</div>
-              {% endif %}
-              {% for field in config_fields %}
-                <div class="field-row">
-                  <div class="field-name">{{ field.name }}</div>
-                  <input type="hidden" name="field_name_{{ loop.index0 }}" value="{{ field.name }}" />
-                  <input type="hidden" name="field_type_{{ loop.index0 }}" value="{{ field.type }}" />
-                  {% if field.type == "yaml" %}
-                    <textarea
-                      name="field_value_{{ loop.index0 }}"
-                      class="config-editor"
-                      spellcheck="false"
-                    >{{ field.value }}</textarea>
-                  {% else %}
-                    <input
-                      type="text"
-                      name="field_value_{{ loop.index0 }}"
-                      class="field-input"
-                      value="{{ field.value }}"
-                    />
-                  {% endif %}
-                </div>
-              {% endfor %}
-              <button type="submit" class="btn btn-upload">Save config + Restart service</button>
-            </form>
+          <div class="timestamp">Path: {{ config_path }}</div>
+          <div class="timestamp">Source: {{ config_path_source }}</div>
+          {% if config_notice %}
+            <div class="notice">{{ config_notice }}</div>
           {% endif %}
+
+          {% if schema_available %}
+            <script id="qilab-schema" type="application/json">{{ schema_obj|tojson }}</script>
+            <script id="qilab-document" type="application/json">{{ document_obj|tojson }}</script>
+            <form id="config-form" class="update-form">
+              <div id="config-body"></div>
+              <div class="config-actions">
+                <button type="submit" class="btn btn-upload">Save config + Restart service</button>
+              </div>
+            </form>
+            <div id="config-save-status" class="timestamp"></div>
+            <noscript>
+              <div class="notice">JavaScript is required to edit the configuration.</div>
+            </noscript>
+          {% else %}
+            <div class="notice">
+              qilab config schema is unavailable, so structured editing is disabled.{% if schema_error %} ({{ schema_error }}){% endif %}
+              Showing the current file read-only.
+            </div>
+            <pre class="log">{{ config_raw }}</pre>
+          {% endif %}
+        </section>
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Config schema</span>
+            {% if schema_result.ok is none %}
+              <span class="status">{% if schema_available %}loaded{% else %}unavailable{% endif %}</span>
+            {% elif schema_result.ok %}
+              <span class="status status-active">reloaded</span>
+            {% else %}
+              <span class="status status-failed">failed</span>
+            {% endif %}
+          </div>
+          <div class="timestamp">Source: {{ schema_source }}</div>
+          <form method="post" action="/config/schema/reload" class="update-form">
+            <button type="submit" class="btn btn-restart">Reload schema</button>
+          </form>
+          <div class="timestamp">Time: {{ schema_result.timestamp }}</div>
+          <pre class="log">{{ schema_result.output }}</pre>
         </section>
 
         <section class="card">
@@ -70,6 +82,8 @@
           <div class="timestamp">Time: {{ config_result.timestamp }}</div>
           <pre class="log">{{ config_result.output }}</pre>
         </section>
+
+        <script src="/static/config.js" defer></script>
       {% else %}
         <section class="card">
           <div class="status-row">

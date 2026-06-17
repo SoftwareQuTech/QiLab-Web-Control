@@ -103,7 +103,9 @@ Open http://localhost:8000
 - Start/stop/restart actions are available from the UI.
 - `QILAB_LOG_LEVEL` can be set from the Control tab (`DEBUG`, `ERRRO`, `OFF`); saving it restarts `qilab.service`.
 - The UI polls `/var/log/qilab/qilab.log` every 100ms and displays the latest lines.
-- The `Config` tab shows YAML entries as lightweight `Name -> Value` fields; after save, values are written back to `QILAB_CONFIG_FILE` and `qilab.service` is restarted automatically.
+- The `Config` tab is a schema-driven structured editor for the qilab `nodes.yaml`. It renders fields, dropdowns, and add/remove controls from qilab's `config.schema.json`, validates edits against that schema before saving, then writes canonical qilab-dialect YAML and restarts `qilab.service`. An invalid edit is rejected without touching the live file.
+  - **Config path** is resolved the way qilab resolves it: it prefers the qilab unit's `QILAB_CONFIG_PATH` / `QILAB_CONFIG_DIR` (read via `systemctl show`), then this process's env, then `~/.qilab/config/nodes.yaml`. `QILAB_CONFIG_FILE` is **deprecated** (qilab never read it) and only used as a last resort. The resolved path and its source are shown in the UI.
+  - **Schema source**: set `QILAB_WEB_SCHEMA_PATH` to qilab's `docs/config.schema.json` (deployed alongside qilab) to track it live; otherwise a vendored copy bundled with this package is used. Use the "Reload schema" button after qilab's schema changes.
 - Binary updates are done by uploading a tarball + version from the UI, which executes `update_release.sh <version> <tarball_path>`.
 - Binary updates are root-only: this web control process must run as root, and it executes the update script directly (no sudo fallback).
 - This server is intentionally minimal. Add authentication before exposing it to any untrusted network.
