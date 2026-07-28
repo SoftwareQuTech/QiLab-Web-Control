@@ -63,6 +63,23 @@ verify:tag_version:
       fi
       echo "Tag version matches setup.py version: $SETUP_VERSION"
 
+verify:vendored_schema:
+  stage: verify
+  <<: *verify_rules
+  image: python:3.11-slim
+  script:
+    - |
+      MANIFEST_VERSION="$(cat app/config/VENDORED_SCHEMA_VERSION | tr -d '[:space:]')"
+      SCHEMA_VERSION="$(python -c "import json; print(json.load(open('app/config/config.schema.json')).get('x-qilab-schema-version', ''))")"
+      if [ "$MANIFEST_VERSION" != "$SCHEMA_VERSION" ]; then
+        echo "Error: app/config/VENDORED_SCHEMA_VERSION ('$MANIFEST_VERSION') does not match"
+        echo "the vendored schema's x-qilab-schema-version ('$SCHEMA_VERSION')."
+        echo "If you refreshed app/config/config.schema.json from a qilab release, bump"
+        echo "VENDORED_SCHEMA_VERSION to match (see README.md Maintainer release workflow)."
+        exit 1
+      fi
+      echo "Vendored schema version matches manifest: $SCHEMA_VERSION"
+
 build:dist:
   stage: build
   <<: *tag_only_rules

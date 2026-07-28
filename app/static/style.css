@@ -124,7 +124,15 @@ body {
   padding: 10px 18px;
   font-size: 15px;
   border-radius: 999px;
+  /* The colour modifiers below override this. It exists so that a bare .btn --
+     the download links, which are deliberately neutral -- is not white-on-white. */
+  background: var(--muted);
   color: #fff;
+  /* The download links are anchors, not buttons: without these the padding does
+     not lay out and the label keeps its underline. */
+  display: inline-block;
+  text-decoration: none;
+  text-align: center;
   cursor: pointer;
   transition: transform 120ms ease, box-shadow 120ms ease;
 }
@@ -243,8 +251,28 @@ body {
   background: #fff;
 }
 
+/* Nested schema sections: a rule down the left is enough to show depth without
+   stacking borders inside borders as the schema nests. */
 .config-subsection {
-  margin: 10px 0;
+  margin: 10px 0 10px 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+/* A schema "description", shown under the field it explains. */
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.config-section > .field-hint,
+.config-subsection > .field-hint {
+  display: block;
+  margin-top: 4px;
 }
 
 .arrays-wrap {
@@ -320,4 +348,89 @@ body {
   .field-name {
     padding-top: 0;
   }
+}
+
+/* --- Telemetry tables (Profiling / Data acquisition tabs) --- */
+
+/* A card whose whole purpose is one diagnostic notice; the .notice inside
+   already carries the colour, so this just removes the doubled padding. */
+.notice-card {
+  padding: 14px 20px;
+}
+
+.notice-card .notice {
+  margin-bottom: 0;
+}
+
+/* Wide tables scroll inside their card rather than widening the page. */
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.data-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.data-table th,
+.data-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-table thead th {
+  background: #f7f3ec;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  position: sticky;
+  top: 0;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr:nth-child(even) {
+  background: #fbf9f6;
+}
+
+/* Numeric-looking columns read far better right-aligned, but the type is only
+   known at runtime, so align every column after the first -- in both tables the
+   first column is the name and the rest are numbers. */
+.data-table th:not(:first-child),
+.data-table td:not(:first-child) {
+  text-align: right;
+}
+
+/* Only applied once telemetry.js has enhanced the table, so the affordance never
+   appears when clicking would do nothing. */
+.data-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.data-table th.sortable:hover {
+  color: var(--ink);
+}
+
+.data-table th.sorted {
+  color: var(--ink);
+}
+
+.data-table th.sorted::after {
+  content: " \2193";
+}
+
+.data-table th.sorted[aria-sort="ascending"]::after {
+  content: " \2191";
 }

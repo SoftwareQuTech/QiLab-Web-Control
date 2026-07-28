@@ -3,19 +3,23 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from datetime import datetime, timezone
+from enum import Enum
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import yaml
 
+from . import telemetry
 from .config import paths as config_paths
 from .config import pipeline as config_pipeline
 from .config import schema as config_schema
@@ -30,6 +34,30 @@ QILAB_LOG_LINES = int(os.getenv("QILAB_LOG_LINES", "200"))
 QILAB_UPDATE_SCRIPT = os.getenv("QILAB_UPDATE_SCRIPT", "/home/mrkolev/work/qilab/scripts/update_release.sh")
 QILAB_UPLOAD_DIR = Path(os.getenv("QILAB_UPLOAD_DIR", "/tmp/qilab_uploads"))
 QILAB_LOG_LEVEL_OPTIONS = ("DEBUG", "ERROR", "OFF")
+
+# Self-update (updates qilab_web_control itself, not the qilab binary).
+QILAB_WEB_CONTROL_SERVICE = os.getenv("QILAB_WEB_CONTROL_SERVICE", "qilab-web-control.service")
+QILAB_WEB_SELF_UPDATE_SCRIPT = os.getenv(
+    "QILAB_WEB_SELF_UPDATE_SCRIPT", str(APP_ROOT.parent / "scripts" / "self_update.sh")
+)
+QILAB_WEB_SELF_UPDATE_UPLOAD_DIR = Path(
+    os.getenv("QILAB_WEB_SELF_UPDATE_UPLOAD_DIR", "/tmp/qilab_web_control_uploads")
+)
+QILAB_WEB_SELF_UPDATE_LOG = Path(
+    os.getenv("QILAB_WEB_SELF_UPDATE_LOG", "/var/log/qilab-web-control/self_update.log")
+)
+QILAB_WEB_SELF_UPDATE_LOG_LINES = int(os.getenv("QILAB_WEB_SELF_UPDATE_LOG_LINES", "200"))
+
+# Telemetry (read-only views of qilab's profiler CSVs and DAQ JSONL).
+QILAB_TABS = ("control", "config", "profiling", "data")
+QILAB_TELEMETRY_TABS = ("profiling", "data")
+# qilab passes this base to PROF_SAVE_DATA at compile time, so the app cannot
+# discover it; overridable for binaries built with a different literal.
+QILAB_WEB_PROFILER_BASE = os.getenv("QILAB_WEB_PROFILER_BASE", telemetry.DEFAULT_PROFILER_BASE)
+QILAB_WEB_DAQ_PREVIEW_LINES = int(os.getenv("QILAB_WEB_DAQ_PREVIEW_LINES", "5"))
+QILAB_WEB_DAQ_COUNT_MAX_BYTES = int(
+    os.getenv("QILAB_WEB_DAQ_COUNT_MAX_BYTES", str(telemetry.COUNT_EXACT_MAX_BYTES))
+)
 
 app = FastAPI(title=UI_TITLE)
 app.mount("/static", StaticFiles(directory=str(APP_ROOT / "static")), name="static")
@@ -57,6 +85,13 @@ LAST_LOG_LEVEL_RESULT = {
     "ok": None,
     "timestamp": "",
     "output": "No log level change has been run yet.",
+}
+
+LAST_SELF_UPDATE_TRIGGER = {
+    "ok": None,
+    "timestamp": "",
+    "version": "",
+    "output": "No self-update has been triggered yet.",
 }
 
 
@@ -107,6 +142,34 @@ def _run_update_script(version: str, tarball_path: Path) -> subprocess.Completed
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+def _installed_version() -> str:
+    try:
+        return importlib_metadata.version("qilab_web_control")
+    except importlib_metadata.PackageNotFoundError:
+        return "unknown (not installed as a package)"
+
+
+def _run_self_update_script(version: str, wheel_path: Path) -> None:
+    """Launch self_update.sh detached, in its own systemd cgroup.
+
+    This service's own restart is part of what the script does; a plain
+    detached child (e.g. Popen(..., start_new_session=True)) would still
+    share this service's cgroup and be killed by that restart before it
+    could verify success or roll back. `systemd-run` gives it an
+    independent transient unit that survives.
+    """
+    subprocess.Popen(
+        [
+            "systemd-run",
+            "--unit=qilab-web-control-selfupdate",
+            "--collect",
+            QILAB_WEB_SELF_UPDATE_SCRIPT,
+            version,
+            str(wheel_path),
+        ]
     )
 
 
@@ -174,11 +237,25 @@ def index(request: Request) -> HTMLResponse:
     info = _service_status()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     active_tab = request.query_params.get("tab", "control")
+    if active_tab not in QILAB_TABS:
+        active_tab = "control"
 
     schema, schema_source, schema_error = config_schema.get_schema()
     resolution = config_paths.resolve_config(QILAB_SERVICE, systemctl=_run_systemctl)
     document, config_notice = _load_current_document(resolution.path, schema)
     config_raw = _safe_read_text(resolution.path) if schema is None else ""
+
+    telemetry_ctx = (
+        telemetry.snapshot(
+            QILAB_SERVICE,
+            systemctl=_run_systemctl,
+            base_name=QILAB_WEB_PROFILER_BASE,
+            service_active=info["status"] == "active",
+            count_max_bytes=QILAB_WEB_DAQ_COUNT_MAX_BYTES,
+        )
+        if active_tab in QILAB_TELEMETRY_TABS
+        else telemetry.empty_snapshot()
+    )
 
     return TEMPLATES.TemplateResponse(
         "index.html",
@@ -203,11 +280,21 @@ def index(request: Request) -> HTMLResponse:
             "schema_error": schema_error,
             "schema_obj": schema,
             "document_obj": document,
+            "default_document_obj": config_schema.default_document(),
             "config_raw": config_raw,
             "log_level_options": QILAB_LOG_LEVEL_OPTIONS,
             "current_log_level": _current_log_level(),
             "log_level_result": LAST_LOG_LEVEL_RESULT,
+            "installed_version": _installed_version(),
+            "self_update_result": LAST_SELF_UPDATE_TRIGGER,
+            **telemetry_ctx,
         },
+        # Every value on this page is live state (service status, the config file,
+        # the schema itself is inlined below). Without this the response carries no
+        # freshness information at all, so a browser may answer a same-URL
+        # navigation -- including the redirect after "Reload schema" -- from cache,
+        # which looks exactly like the server ignoring the reload.
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -275,7 +362,75 @@ async def update_binary(
     LAST_UPDATE_RESULT["version"] = version
     LAST_UPDATE_RESULT["output"] = combined_output.strip() or "No output from update script."
 
+    if result.returncode == 0:
+        _, schema_source, schema_error = config_schema.reload_schema()
+        if schema_error:
+            LAST_UPDATE_RESULT["output"] += f"\nWarning: failed to reload config schema from {schema_source}: {schema_error}"
+        else:
+            LAST_UPDATE_RESULT["output"] += f"\nConfig schema reloaded from {schema_source}."
+
     return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/self-update")
+async def self_update(
+    version: str = Form(...),
+    wheel: UploadFile = File(...),
+) -> RedirectResponse:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    if os.geteuid() != 0:
+        LAST_SELF_UPDATE_TRIGGER.update(
+            ok=False,
+            timestamp=now,
+            version=version,
+            output="Self-update aborted: web control must run as root to execute self_update.sh.",
+        )
+        await wheel.close()
+        return RedirectResponse(url="/", status_code=303)
+
+    QILAB_WEB_SELF_UPDATE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    safe_name = Path(wheel.filename or "qilab_web_control.whl").name
+    upload_target = Path(
+        tempfile.mkstemp(
+            prefix=f"qilab-web-control-{version}-", suffix=f"-{safe_name}", dir=QILAB_WEB_SELF_UPDATE_UPLOAD_DIR
+        )[1]
+    )
+
+    try:
+        with upload_target.open("wb") as out_file:
+            shutil.copyfileobj(wheel.file, out_file)
+    finally:
+        await wheel.close()
+
+    # Fire-and-forget: this process (and this very request) may be restarted
+    # partway through the update, so success/failure can't be reported
+    # synchronously here — check the self-update log below instead.
+    _run_self_update_script(version=version, wheel_path=upload_target)
+
+    LAST_SELF_UPDATE_TRIGGER.update(
+        ok=None,
+        timestamp=now,
+        version=version,
+        output=(
+            f"Self-update to {version} started in the background. This page's process may "
+            "restart partway through — watch the log below for the result."
+        ),
+    )
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.get("/self-update/logs")
+def self_update_logs() -> JSONResponse:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return JSONResponse(
+        {
+            "path": str(QILAB_WEB_SELF_UPDATE_LOG),
+            "updated": now,
+            "content": _tail_log(QILAB_WEB_SELF_UPDATE_LOG, QILAB_WEB_SELF_UPDATE_LOG_LINES),
+        }
+    )
 
 
 @app.post("/config/save")
@@ -369,3 +524,80 @@ def set_log_level(log_level: str = Form(...)) -> RedirectResponse:
         ).strip()
 
     return RedirectResponse(url="/?tab=control", status_code=303)
+
+
+# --- Telemetry (read-only) ----------------------------------------------------
+# These routes only read files, so unlike /update, /config/save and /log-level
+# they deliberately do NOT gate on os.geteuid() -- that would break every dev run.
+
+
+class Artifact(str, Enum):
+    """Downloadable artifacts.
+
+    A str-Enum path parameter means no caller-supplied path segment ever reaches
+    the filesystem: Starlette rejects anything else with a 422 before the handler
+    body runs, so traversal is structurally impossible rather than filtered.
+    """
+
+    profiler_durations = "profiler-durations"
+    profiler_events = "profiler-events"
+    daq = "daq"
+
+
+@app.get("/data-acquisition/preview")
+def data_acquisition_preview() -> JSONResponse:
+    """Tail of the DAQ JSONL.
+
+    Returns the same {path, updated, content} triple as /logs so the existing
+    pollLog() renders it with no new JavaScript.
+    """
+    resolution = telemetry.resolve_daq_path(QILAB_SERVICE, systemctl=_run_systemctl)
+    return JSONResponse(
+        {
+            "path": str(resolution.path),
+            "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "content": _tail_log(resolution.path, QILAB_WEB_DAQ_PREVIEW_LINES),
+        }
+    )
+
+
+@app.get("/telemetry/download/{artifact}")
+def download_telemetry(artifact: Artifact) -> Response:
+    target = telemetry.resolve_artifact(
+        artifact.value,
+        QILAB_SERVICE,
+        systemctl=_run_systemctl,
+        base_name=QILAB_WEB_PROFILER_BASE,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Unknown artifact.")
+    path, media_type, filename = target
+
+    # The paths come from root-owned unit config, so the meaningful residual risk
+    # is the log directory being swapped for a symlink, not traversal.
+    if path.is_symlink() or path.parent.is_symlink():
+        raise HTTPException(status_code=404, detail="Refusing to serve a symlinked telemetry path.")
+    try:
+        st = path.stat()
+    except OSError:
+        raise HTTPException(status_code=404, detail=f"Not found on disk: {path}")
+    if not stat.S_ISREG(st.st_mode):
+        raise HTTPException(status_code=404, detail=f"Not a regular file: {path}")
+
+    if artifact is Artifact.daq:
+        # Append-only, so any prefix is a valid JSONL document and streaming is safe.
+        return FileResponse(path, media_type=media_type, filename=filename, stat_result=st)
+
+    # The profiler CSVs are truncate-rewritten at every qilab shutdown. Streaming
+    # one while that happens would send a Content-Length from the pre-truncation
+    # stat and then a short body -- a corrupt download. They are kilobytes, so
+    # snapshot them in a single read instead.
+    try:
+        body = path.read_bytes()
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail=f"Could not read {path}: {exc}")
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

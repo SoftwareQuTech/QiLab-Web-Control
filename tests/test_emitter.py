@@ -1,6 +1,7 @@
 import yaml
 
-from app.config.emitter import emit_yaml
+from app.config import schema as config_schema
+from app.config.emitter import emit_yaml, key_order
 
 EXPECTED = """\
 entanglement_noise_model:
@@ -66,6 +67,37 @@ def test_no_trailing_inline_comments():
 def test_round_trips_through_yaml():
     doc = sample_doc()
     assert yaml.safe_load(emit_yaml(doc)) == doc
+
+
+def test_key_order_follows_the_schema():
+    schema, _, _ = config_schema.get_schema()
+    order = key_order(schema)
+
+    # Ranks are derived, so a renamed field cannot go stale the way a hand-written
+    # list did; every property of every $def gets one.
+    for name in schema["properties"]:
+        assert name in order
+    for name in schema["$defs"]["qubit_array"]["properties"]:
+        assert name in order
+
+    # A model's discriminator must outrank the fields of every branch it selects.
+    branch = schema["$defs"]["qubit_noise_model"]["oneOf"][1]["properties"]
+    assert all(order["type"] < order[name] for name in branch if name != "type")
+
+
+def test_key_order_puts_schema_keys_before_unknown_ones():
+    schema, _, _ = config_schema.get_schema()
+    doc = {"nodes": [{"legacy_extra": 1, "name": "alice"}]}
+
+    lines = emit_yaml(doc, key_order(schema)).splitlines()
+
+    assert lines[1].strip().startswith("- name:"), lines
+    assert lines[2].strip().startswith("legacy_extra:"), lines
+
+
+def test_key_order_of_none_schema_keeps_insertion_order():
+    doc = {"b": 1, "a": 2}
+    assert emit_yaml(doc, key_order(None)) == "b: 1\na: 2\n"
 
 
 def test_emits_all_models_round_trip():

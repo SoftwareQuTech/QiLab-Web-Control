@@ -1,25 +1,5 @@
-import subprocess
-
 from app.config import paths
-
-
-def _cp(args, returncode=0, stdout=""):
-    return subprocess.CompletedProcess(list(args), returncode, stdout=stdout, stderr="")
-
-
-def make_systemctl(environment="", user=""):
-    """Fake systemctl returning canned ``show -p Environment`` / ``-p User`` output."""
-
-    def run(*args):
-        if len(args) >= 3 and args[0] == "show" and args[1] == "-p":
-            prop = args[2]
-            if prop == "Environment":
-                return _cp(args, stdout=f"Environment={environment}" if environment else "")
-            if prop == "User":
-                return _cp(args, stdout=f"User={user}" if user else "")
-        return _cp(args, returncode=1)
-
-    return run
+from conftest import make_systemctl
 
 
 def test_unit_config_path_wins():
@@ -84,3 +64,103 @@ def test_quoted_environment_value_is_unquoted():
         systemctl=make_systemctl(environment='QILAB_CONFIG_PATH="/srv/with space/nodes.yaml"'),
     )
     assert str(res.path) == "/srv/with space/nodes.yaml"
+
+
+# --- EnvironmentFile= support -------------------------------------------------
+# systemctl show -p Environment reports ONLY inline Environment= directives; it
+# never expands EnvironmentFile=. The deployed image puts qilab's paths in a
+# shared /etc/default/qilab-global-env, so without this the UI silently resolves
+# to the wrong tier and reads/edits a different file than the simulator.
+
+
+def test_environment_file_is_read(tmp_path):
+    env_file = tmp_path / "qilab-global-env"
+    env_file.write_text("QILAB_CONFIG_DIR=/etc/qilab\n", encoding="utf-8")
+
+    res = paths.resolve_config(
+        "qilab.service",
+        environ={},
+        systemctl=make_systemctl(environment_files=[env_file]),
+    )
+    assert str(res.path) == "/etc/qilab/nodes.yaml"
+    assert "qilab.service env QILAB_CONFIG_DIR" in res.source
+    assert str(env_file) in res.source
+
+
+def test_inline_environment_overrides_environment_file(tmp_path):
+    """systemd applies Environment= after EnvironmentFile=, so inline wins."""
+    env_file = tmp_path / "qilab-global-env"
+    env_file.write_text("QILAB_CONFIG_DIR=/from/file\n", encoding="utf-8")
+
+    res = paths.resolve_config(
+        "qilab.service",
+        environ={},
+        systemctl=make_systemctl(
+            environment="QILAB_CONFIG_DIR=/from/inline",
+            environment_files=[env_file],
+        ),
+    )
+    assert str(res.path) == "/from/inline/nodes.yaml"
+    assert "Environment=" in res.source
+
+
+def test_environment_file_beats_server_env(tmp_path):
+    """The qilab unit's environment outranks the web server's, file or not."""
+    env_file = tmp_path / "qilab-global-env"
+    env_file.write_text("QILAB_CONFIG_DIR=/unit/wins\n", encoding="utf-8")
+
+    res = paths.resolve_config(
+        "qilab.service",
+        environ={"QILAB_CONFIG_DIR": "/server/loses"},
+        systemctl=make_systemctl(environment_files=[env_file]),
+    )
+    assert str(res.path) == "/unit/wins/nodes.yaml"
+
+
+def test_later_environment_file_wins(tmp_path):
+    first = tmp_path / "a-env"
+    first.write_text("QILAB_CONFIG_DIR=/first\n", encoding="utf-8")
+    second = tmp_path / "b-env"
+    second.write_text("QILAB_CONFIG_DIR=/second\n", encoding="utf-8")
+
+    env = paths.unit_environment(
+        "qilab.service", make_systemctl(environment_files=[first, second])
+    )
+    assert env.get("QILAB_CONFIG_DIR") == "/second"
+
+
+def test_missing_environment_file_is_not_fatal(tmp_path):
+    res = paths.resolve_config(
+        "qilab.service",
+        environ={"QILAB_CONFIG_DIR": "/server/fallback"},
+        systemctl=make_systemctl(environment_files=[tmp_path / "absent"]),
+    )
+    assert str(res.path) == "/server/fallback/nodes.yaml"
+
+
+def test_read_environment_file_parses_comments_and_quotes(tmp_path):
+    env_file = tmp_path / "env"
+    env_file.write_text(
+        "\n"
+        "# a comment\n"
+        "QILAB_DAQ=1\n"
+        '  QUOTED="/has space/x"  \n'
+        "SINGLE='/single'\n"
+        "not a key=value\n"
+        "NO_EQUALS\n",
+        encoding="utf-8",
+    )
+    parsed = paths.read_environment_file(env_file)
+    assert parsed == {
+        "QILAB_DAQ": "1",
+        "QUOTED": "/has space/x",
+        "SINGLE": "/single",
+    }
+
+
+def test_environment_files_parses_systemd_rendering():
+    systemctl = make_systemctl(environment_files=["/etc/default/one", "/etc/default/two"])
+    assert [str(p) for p in paths.environment_files("qilab.service", systemctl)] == [
+        "/etc/default/one",
+        "/etc/default/two",
+    ]

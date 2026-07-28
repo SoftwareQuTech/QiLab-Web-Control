@@ -1,3 +1,8 @@
+# Minimal example: runs directly from a source checkout with the system
+# Python, no venv. The self-update route (see README.md "Self-update")
+# requires the versioned releases/<version>/venv + `current` symlink layout
+# from README's "Debian deployment" section — it is not available in this
+# simpler mode.
 [Unit]
 Description=Qilab Web Control (FastAPI)
 After=network.target

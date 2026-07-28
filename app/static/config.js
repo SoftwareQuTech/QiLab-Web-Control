@@ -2,23 +2,36 @@
  *
  * Reads qilab's JSON Schema and the current config document (injected as
  * <script type="application/json"> blobs), renders a structured form, and
- * submits the edited document as JSON to /config/save. Adding a new noise
- * model / field / node type to the schema makes it appear here automatically.
+ * submits the edited document as JSON to /config/save.
+ *
+ * The renderer *walks* the schema instead of naming fields: objects, arrays,
+ * $ref, oneOf discriminated unions, enums and scalars each have one generic
+ * case, and serialization is the inverse walk of the same tree. A schema change
+ * -- new field, new noise model, new top-level section, a renamed $def -- needs
+ * no edit here. Nothing below may reference a qilab field name; the moment it
+ * does, the editor starts drifting from the schema again (which is exactly how
+ * the previous hand-written renderer silently kept showing an old format).
+ *
+ * Scalars live in the state tree as strings, the way the inputs produce them,
+ * and are coerced to numbers/booleans only in serialize().
  */
 (function () {
   "use strict";
 
   var schemaEl = document.getElementById("qilab-schema");
   var docEl = document.getElementById("qilab-document");
+  var defaultDocEl = document.getElementById("qilab-default-document");
   var body = document.getElementById("config-body");
   var form = document.getElementById("config-form");
   var statusEl = document.getElementById("config-save-status");
+  var loadDefaultBtn = document.getElementById("config-load-default");
   if (!schemaEl || !body || !form) return;
 
-  var schema, sourceDoc;
+  var schema, sourceDoc, defaultDoc;
   try {
     schema = JSON.parse(schemaEl.textContent || "null");
     sourceDoc = JSON.parse((docEl && docEl.textContent) || "null") || {};
+    defaultDoc = JSON.parse((defaultDocEl && defaultDocEl.textContent) || "null") || {};
   } catch (err) {
     body.textContent = "Failed to parse schema/document: " + err;
     return;
@@ -28,108 +41,165 @@
     return;
   }
 
-  var defs = schema.$defs || {};
-  var nodeProps = (defs.node && defs.node.properties) || {};
-  var NODE_TYPES = (nodeProps.node_type && nodeProps.node_type.enum) || ["GENERIC"];
-  var DELAY_KEYS = Object.keys(((defs.operation_delays || {}).properties) || {});
+  // ---- schema helpers ----
 
-  function branches(groupName) {
-    var group = defs[groupName] || {};
-    return (group.oneOf || []).map(function (branch) {
-      var props = branch.properties || {};
-      var fields = Object.keys(props)
-        .filter(function (key) { return key !== "type"; })
-        .map(function (key) {
-          var prop = props[key] || {};
-          return {
-            name: key,
-            integer: prop.type === "integer",
-            minimum: prop.minimum,
-            exclusiveMinimum: prop.exclusiveMinimum,
-            unit: prop.unit || "",
-          };
-        });
-      return { type: (props.type || {}).const, fields: fields };
+  /* Resolve a (possibly $ref) subschema. Keywords written next to the $ref win
+     over the definition's own, so a property can retitle what it points at. */
+  function resolve(node, depth) {
+    if (!node || !node.$ref) return node || {};
+    if ((depth || 0) > 32) return {}; // self-referential schema; refuse to spin
+    var target = schema;
+    node.$ref.replace(/^#\/?/, "").split("/").forEach(function (part) {
+      target = (target || {})[part];
     });
+    var merged = {};
+    Object.keys(target || {}).forEach(function (key) { merged[key] = target[key]; });
+    Object.keys(node).forEach(function (key) {
+      if (key !== "$ref") merged[key] = node[key];
+    });
+    return merged.$ref ? resolve(merged, (depth || 0) + 1) : merged;
   }
 
-  var QUBIT_MODELS = branches("qubit_noise_model");
-  var ENT_MODELS = branches("entanglement_noise_model");
-
-  function modelByType(models, type) {
-    return (
-      models.find(function (m) { return m.type === type; }) ||
-      models[0] ||
-      { type: type, fields: [] }
-    );
+  function kindOf(node) {
+    if (node.oneOf) return "union";
+    if (node.enum) return "enum";
+    if (node.type === "array") return "array";
+    if (node.type === "object" || node.properties) return "object";
+    if (node.type === "boolean") return "boolean";
+    if (node.type === "integer" || node.type === "number") return "number";
+    return "string";
   }
 
-  function ensureType(models, type) {
-    return models.some(function (m) { return m.type === type; })
-      ? type
-      : (models[0] && models[0].type);
+  function isComposite(kind) {
+    return kind === "object" || kind === "union" || kind === "array";
   }
 
-  // ---- state init (mirrors output shape, scalar values kept as strings) ----
-  function fieldValues(obj) {
-    var values = {};
-    if (obj && typeof obj === "object") {
-      Object.keys(obj).forEach(function (key) {
-        if (key !== "type") values[key] = String(obj[key]);
+  /* The discriminator of a oneOf branch: the const pinned on its "type". */
+  function branchType(branch) {
+    return (((branch || {}).properties || {}).type || {}).const;
+  }
+
+  function branchOf(node, type) {
+    var list = node.oneOf || [];
+    for (var i = 0; i < list.length; i++) {
+      if (branchType(list[i]) === type) return list[i];
+    }
+    return list[0] || { properties: {} };
+  }
+
+  function isRequired(node, key) {
+    return (node.required || []).indexOf(key) >= 0;
+  }
+
+  function labelOf(node, key) {
+    var text = node.title || key;
+    return node.unit ? text + " (" + node.unit + ")" : text;
+  }
+
+  // ---- blank values (required keys only: optional ones stay unset) ----
+
+  function blankObject(node, type) {
+    var value = {};
+    var props = node.properties || {};
+    if (type) value.type = type;
+    (node.required || []).forEach(function (key) {
+      if (key !== "type" && props[key]) value[key] = blank(props[key]);
+    });
+    return value;
+  }
+
+  function blank(node) {
+    node = resolve(node);
+    switch (kindOf(node)) {
+      case "object":
+        return blankObject(node);
+      case "union":
+        var branch = (node.oneOf || [])[0] || {};
+        return blankObject(branch, branchType(branch));
+      case "array":
+        // One item even when minItems is 0 -- an empty list has nothing to edit.
+        var items = [];
+        for (var i = 0; i < Math.max(node.minItems || 0, 1); i++) {
+          items.push(blank(node.items || {}));
+        }
+        return items;
+      case "enum":
+        return String(node.default != null ? node.default : node.enum[0]);
+      case "boolean":
+        return ""; // unset, so the schema default applies
+      case "number":
+        return node.default != null ? String(node.default) : "";
+      default:
+        return node.default != null ? String(node.default) : "";
+    }
+  }
+
+  // ---- adopt a loaded document into the state tree ----
+
+  /* Keys the schema does not know cannot be edited or saved (every object is
+     additionalProperties:false), so they are dropped -- but reported, because
+     silently discarding part of someone's config on save is not acceptable. */
+  var dropped = [];
+
+  function childPath(path, key) {
+    return path ? path + "." + key : key;
+  }
+
+  function adoptObject(node, value, path, type) {
+    var props = node.properties || {};
+    var out = {};
+    if (type) out.type = type;
+    Object.keys(value).forEach(function (key) {
+      if (key === "type" && type) return;
+      if (!props[key]) {
+        dropped.push(childPath(path, key));
+        return;
+      }
+      out[key] = adopt(props[key], value[key], childPath(path, key));
+    });
+    // A required key the document lacks still needs an editable blank.
+    (node.required || []).forEach(function (key) {
+      if (key !== "type" && props[key] && out[key] === undefined) {
+        out[key] = blank(props[key]);
+      }
+    });
+    return out;
+  }
+
+  function adopt(node, value, path) {
+    node = resolve(node);
+    var kind = kindOf(node);
+
+    if (kind === "object" || kind === "union") {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return blank(node);
+      if (kind === "union") {
+        var branch = branchOf(node, value.type);
+        return adoptObject(branch, value, path, branchType(branch));
+      }
+      return adoptObject(node, value, path);
+    }
+    if (kind === "array") {
+      if (!Array.isArray(value) || !value.length) return blank(node);
+      return value.map(function (item, index) {
+        return adopt(node.items || {}, item, path + "[" + index + "]");
       });
     }
-    return values;
+    if (kind === "enum") {
+      return node.enum.map(String).indexOf(String(value)) >= 0 ? String(value) : blank(node);
+    }
+    if (kind === "boolean") {
+      return typeof value === "boolean" ? String(value) : blank(node);
+    }
+    if (value === null || value === undefined || typeof value === "object") return blank(node);
+    return String(value);
   }
 
-  function initEnt() {
-    var obj = sourceDoc.entanglement_noise_model;
-    return {
-      enabled: !!obj,
-      type: ensureType(ENT_MODELS, (obj && obj.type)),
-      values: fieldValues(obj),
-    };
+  function load(doc) {
+    dropped = [];
+    return adopt(schema, doc, "");
   }
 
-  function initArray(arr) {
-    arr = arr || {};
-    var nm = arr.noise_model || {};
-    return {
-      num_qubits: arr.num_qubits != null ? String(arr.num_qubits) : "",
-      type: ensureType(QUBIT_MODELS, nm.type),
-      values: fieldValues(nm),
-    };
-  }
-
-  function initDelays(node) {
-    var delays = node.quantum_operations_delay_ns;
-    var values = {};
-    DELAY_KEYS.forEach(function (key) {
-      values[key] = delays && delays[key] != null ? String(delays[key]) : "";
-    });
-    return { enabled: !!delays, values: values };
-  }
-
-  function initNode(node) {
-    node = node || {};
-    var arrays =
-      Array.isArray(node.qubit_arrays) && node.qubit_arrays.length
-        ? node.qubit_arrays.map(initArray)
-        : [initArray({})];
-    return {
-      name: node.name != null ? String(node.name) : "",
-      node_type: NODE_TYPES.indexOf(node.node_type) >= 0 ? node.node_type : "GENERIC",
-      delays: initDelays(node),
-      arrays: arrays,
-    };
-  }
-
-  var state = {
-    ent: initEnt(),
-    nodes:
-      Array.isArray(sourceDoc.nodes) && sourceDoc.nodes.length
-        ? sourceDoc.nodes.map(initNode)
-        : [initNode({})],
-  };
+  var state = load(sourceDoc);
 
   // ---- tiny DOM helper ----
   function h(tag, attrs, children) {
@@ -151,241 +221,320 @@
     return node;
   }
 
-  function numberInput(value, field, oninput) {
+  function hint(node) {
+    return node.description ? h("span", { class: "field-hint", text: node.description }) : null;
+  }
+
+  // ---- scalar inputs ----
+
+  function numberInput(node, holder, key, required) {
+    var integer = node.type === "integer";
     var attrs = {
       type: "number",
       class: "field-input",
-      value: value != null ? value : "",
-      step: field.integer ? "1" : "any",
-      required: true,
-      oninput: oninput,
+      step: integer ? "1" : "any",
+      value: holder[key] != null ? holder[key] : "",
+      required: required,
+      oninput: function (event) { holder[key] = event.target.value; },
     };
-    if (field.minimum !== undefined) {
-      attrs.min = field.minimum;
-    } else if (field.exclusiveMinimum !== undefined) {
-      attrs.min = field.integer ? field.exclusiveMinimum + 1 : field.exclusiveMinimum;
+    if (node.minimum !== undefined) attrs.min = node.minimum;
+    else if (node.exclusiveMinimum !== undefined) {
+      attrs.min = integer ? node.exclusiveMinimum + 1 : node.exclusiveMinimum;
+    }
+    if (node.maximum !== undefined) attrs.max = node.maximum;
+    else if (node.exclusiveMaximum !== undefined) {
+      attrs.max = integer ? node.exclusiveMaximum - 1 : node.exclusiveMaximum;
     }
     return h("input", attrs);
   }
 
-  function typeSelect(models, holder) {
-    return h(
-      "select",
-      {
-        class: "field-input",
-        onchange: function (event) { holder.type = event.target.value; render(); },
-      },
-      models.map(function (model) {
-        return h("option", { value: model.type, selected: model.type === holder.type }, [model.type]);
+  function textInput(node, holder, key, required) {
+    return h("input", {
+      type: "text",
+      class: "field-input",
+      value: holder[key] != null ? holder[key] : "",
+      required: required,
+      oninput: function (event) { holder[key] = event.target.value; },
+    });
+  }
+
+  function options(values, selected, placeholder) {
+    var list = placeholder == null ? [] : [h("option", { value: "", selected: selected === "" }, [placeholder])];
+    return list.concat(
+      values.map(function (value) {
+        return h("option", { value: value, selected: String(value) === String(selected) }, [String(value)]);
       })
     );
   }
 
-  function modelFields(models, holder) {
-    var wrap = h("div", { class: "model-fields" });
-    modelByType(models, holder.type).fields.forEach(function (field) {
-      var label = field.name + (field.unit ? " (" + field.unit + ")" : "");
-      var input = numberInput(holder.values[field.name], field, function (event) {
-        holder.values[field.name] = event.target.value;
-      });
-      wrap.appendChild(h("label", { class: "field" }, [h("span", { text: label }), input]));
+  function selectInput(values, holder, key, required, placeholder, rerender) {
+    return h(
+      "select",
+      {
+        class: "field-input",
+        required: required,
+        onchange: function (event) {
+          holder[key] = event.target.value;
+          if (rerender) render();
+        },
+      },
+      options(values, holder[key], placeholder)
+    );
+  }
+
+  /* An optional boolean has three states, not two: true, false, and unset (use
+     the schema default). A checkbox cannot express the third, so it is a select. */
+  function boolInput(node, holder, key, required) {
+    var placeholder = required
+      ? null
+      : "default" + (node.default !== undefined ? " (" + node.default + ")" : "");
+    return selectInput(["true", "false"], holder, key, required, placeholder);
+  }
+
+  function scalarField(node, holder, key, required) {
+    var kind = kindOf(node);
+    var input;
+    if (kind === "enum") input = selectInput(node.enum, holder, key, required, required ? null : "unset");
+    else if (kind === "boolean") input = boolInput(node, holder, key, required);
+    else if (kind === "number") input = numberInput(node, holder, key, required);
+    else input = textInput(node, holder, key, required);
+
+    return h("label", { class: "field", title: key }, [
+      h("span", { text: labelOf(node, key) + (required ? "" : " (optional)") }),
+      input,
+      hint(node),
+    ]);
+  }
+
+  // ---- composite renderers ----
+
+  function sectionClass(depth) {
+    return depth <= 1 ? "config-section" : "config-subsection";
+  }
+
+  /* Render an object's properties into `parent`: consecutive scalars share one
+     responsive grid, composites become their own (sub)section. */
+  function renderProperties(node, value, depth, parent) {
+    var props = node.properties || {};
+    var grid = null;
+    Object.keys(props).forEach(function (key) {
+      if (key === "type") return; // the union discriminator; rendered by renderUnion
+      var child = resolve(props[key]);
+      var required = isRequired(node, key);
+      if (isComposite(kindOf(child))) {
+        grid = null;
+        parent.appendChild(renderComposite(child, value, key, depth + 1, required));
+      } else {
+        if (!grid) {
+          grid = h("div", { class: "model-fields" });
+          parent.appendChild(grid);
+        }
+        grid.appendChild(scalarField(child, value, key, required));
+      }
     });
-    return wrap;
+    return parent;
   }
 
-  // ---- renderers ----
-  function renderEnt() {
-    var section = h("div", { class: "config-section" }, [
-      h("div", { class: "label", text: "Entanglement noise model" }),
-      h("label", { class: "field-inline" }, [
-        h("input", {
-          type: "checkbox",
-          checked: state.ent.enabled,
-          onchange: function (event) { state.ent.enabled = event.target.checked; render(); },
-        }),
-        h("span", { text: "Set entanglement noise model (defaults to BASIC t2_value 1000 if unset)" }),
-      ]),
-    ]);
-    if (state.ent.enabled) {
-      section.appendChild(
-        h("label", { class: "field" }, [h("span", { text: "type" }), typeSelect(ENT_MODELS, state.ent)])
-      );
-      section.appendChild(modelFields(ENT_MODELS, state.ent));
-    }
-    return section;
+  function renderObject(node, value, depth) {
+    return renderProperties(node, value, depth, document.createDocumentFragment());
   }
 
-  function renderArray(node, arr, idx) {
-    return h("div", { class: "array-block" }, [
-      h("div", { class: "status-row" }, [
-        h("span", { class: "label", text: "Qubit array " + (idx + 1) }),
+  function renderUnion(node, holder, key, depth) {
+    var value = holder[key];
+    var branch = branchOf(node, value.type);
+    var types = (node.oneOf || []).map(branchType);
+    var wrap = document.createDocumentFragment();
+    wrap.appendChild(
+      h("label", { class: "field", title: key + ".type" }, [
+        h("span", { text: "type" }),
         h(
-          "button",
+          "select",
           {
-            type: "button",
-            class: "btn btn-remove",
-            disabled: node.arrays.length <= 1,
-            onclick: function () { node.arrays.splice(idx, 1); render(); },
+            class: "field-input",
+            onchange: function (event) { switchType(node, value, event.target.value); },
           },
-          ["Remove array"]
+          options(types, value.type)
         ),
-      ]),
-      h("label", { class: "field" }, [
-        h("span", { text: "num_qubits" }),
-        numberInput(arr.num_qubits, { integer: true, exclusiveMinimum: 0 }, function (event) {
-          arr.num_qubits = event.target.value;
-        }),
-      ]),
-      h("label", { class: "field" }, [
-        h("span", { text: "noise_model.type" }),
-        typeSelect(QUBIT_MODELS, arr),
-      ]),
-      modelFields(QUBIT_MODELS, arr),
-    ]);
-  }
-
-  function renderDelays(node) {
-    var wrap = h("div", { class: "config-subsection" }, [
-      h("label", { class: "field-inline" }, [
-        h("input", {
-          type: "checkbox",
-          checked: node.delays.enabled,
-          onchange: function (event) { node.delays.enabled = event.target.checked; render(); },
-        }),
-        h("span", { text: "Set operation delays (ns)" }),
-      ]),
-    ]);
-    if (node.delays.enabled) {
-      var grid = h("div", { class: "delay-grid" });
-      DELAY_KEYS.forEach(function (key) {
-        grid.appendChild(
-          h("label", { class: "field" }, [
-            h("span", { text: key }),
-            numberInput(node.delays.values[key], { integer: true, minimum: 0 }, function (event) {
-              node.delays.values[key] = event.target.value;
-            }),
-          ])
-        );
-      });
-      wrap.appendChild(grid);
-    }
+      ])
+    );
+    renderProperties(branch, value, depth, wrap);
     return wrap;
   }
 
-  function renderNode(node, idx) {
-    var arraysWrap = h("div", { class: "arrays-wrap" }, [
-      h("div", { class: "label", text: "Qubit arrays" }),
-    ]);
-    node.arrays.forEach(function (arr, i) { arraysWrap.appendChild(renderArray(node, arr, i)); });
-    arraysWrap.appendChild(
+  /* Switch a union to another branch, carrying over any same-named fields so
+     retyping a model does not lose values the new branch also has. */
+  function switchType(node, value, type) {
+    var branch = branchOf(node, type);
+    var props = branch.properties || {};
+    var carried = {};
+    Object.keys(props).forEach(function (key) {
+      if (key !== "type" && value[key] !== undefined) carried[key] = value[key];
+    });
+    Object.keys(value).forEach(function (key) { delete value[key]; });
+    var next = blankObject(branch, type);
+    Object.keys(next).forEach(function (key) { value[key] = next[key]; });
+    Object.keys(carried).forEach(function (key) { value[key] = carried[key]; });
+    render();
+  }
+
+  function renderArray(node, items, depth) {
+    var itemNode = resolve(node.items || {});
+    var floor = Math.max(node.minItems || 0, 1);
+    var wrap = document.createDocumentFragment();
+
+    items.forEach(function (item, index) {
+      var block = h("div", { class: "array-block" }, [
+        h("div", { class: "status-row" }, [
+          h("span", { class: "label", text: labelOf(itemNode, "item") + " " + (index + 1) }),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn btn-remove",
+              disabled: items.length <= floor,
+              onclick: function () { items.splice(index, 1); render(); },
+            },
+            ["Remove"]
+          ),
+        ]),
+      ]);
+      block.appendChild(renderNode(itemNode, items, index, depth + 1));
+      wrap.appendChild(block);
+    });
+
+    wrap.appendChild(
       h(
         "button",
         {
           type: "button",
           class: "btn btn-add",
-          onclick: function () { node.arrays.push(initArray({})); render(); },
+          onclick: function () { items.push(blank(itemNode)); render(); },
         },
-        ["+ Add qubit array"]
+        ["+ Add " + labelOf(itemNode, "item").toLowerCase()]
       )
     );
+    return wrap;
+  }
 
-    return h("div", { class: "node-block" }, [
-      h("div", { class: "status-row" }, [
-        h("span", { class: "label", text: "Node " + (idx + 1) }),
-        h(
-          "button",
-          {
-            type: "button",
-            class: "btn btn-remove",
-            disabled: state.nodes.length <= 1,
-            onclick: function () { state.nodes.splice(idx, 1); render(); },
-          },
-          ["Remove node"]
-        ),
-      ]),
-      h("label", { class: "field" }, [
-        h("span", { text: "name" }),
-        h("input", {
-          type: "text",
-          class: "field-input",
-          value: node.name,
-          oninput: function (event) { node.name = event.target.value; },
-        }),
-      ]),
-      h("label", { class: "field" }, [
-        h("span", { text: "node_type" }),
-        h(
-          "select",
-          { class: "field-input", onchange: function (event) { node.node_type = event.target.value; } },
-          NODE_TYPES.map(function (type) {
-            return h("option", { value: type, selected: type === node.node_type }, [type]);
-          })
-        ),
-      ]),
-      renderDelays(node),
-      arraysWrap,
+  /* Dispatch on kind for a value held at holder[key]. */
+  function renderNode(node, holder, key, depth) {
+    switch (kindOf(node)) {
+      case "object":
+        return renderObject(node, holder[key], depth);
+      case "union":
+        return renderUnion(node, holder, key, depth);
+      case "array":
+        return renderArray(node, holder[key], depth);
+      default:
+        return scalarField(node, holder, key, true);
+    }
+  }
+
+  /* A composite property: its own section, plus a presence toggle when it is
+     optional (a partly-filled nested object cannot be expressed as "unset"). */
+  function renderComposite(node, value, key, depth, required) {
+    var label = labelOf(node, key);
+    // title=key so hovering any section still tells the operator which YAML key
+    // it writes, however far the schema's titles drift from the field names.
+    var section = h("div", { class: sectionClass(depth), title: key }, [
+      h("div", { class: "label", text: label }),
+      hint(node),
     ]);
+
+    if (!required) {
+      var present = value[key] !== undefined;
+      section.appendChild(
+        h("label", { class: "field-inline", title: key }, [
+          h("input", {
+            type: "checkbox",
+            checked: present,
+            onchange: function (event) {
+              if (event.target.checked) value[key] = blank(node);
+              else delete value[key];
+              render();
+            },
+          }),
+          h("span", { text: "Set " + label }),
+        ])
+      );
+      if (!present) return section;
+    }
+
+    if (value[key] === undefined) value[key] = blank(node);
+    section.appendChild(renderNode(node, value, key, depth));
+    return section;
   }
 
   function render() {
     body.innerHTML = "";
-    body.appendChild(renderEnt());
-    var nodesWrap = h("div", { class: "nodes-wrap" }, [h("div", { class: "label", text: "Nodes" })]);
-    state.nodes.forEach(function (node, i) { nodesWrap.appendChild(renderNode(node, i)); });
-    nodesWrap.appendChild(
-      h(
-        "button",
-        {
-          type: "button",
-          class: "btn btn-add",
-          onclick: function () { state.nodes.push(initNode({})); render(); },
-        },
-        ["+ Add node"]
-      )
-    );
-    body.appendChild(nodesWrap);
+    if (dropped.length) {
+      body.appendChild(
+        h("div", {
+          class: "notice",
+          text:
+            "These keys are not in the current schema and will be dropped if you save: " +
+            dropped.join(", "),
+        })
+      );
+    }
+    body.appendChild(renderObject(schema, state, 0));
   }
 
   // ---- serialize state -> JSON document ----
+
   function toNumber(raw, integer) {
     if (raw === undefined || raw === null || String(raw).trim() === "") return undefined;
     var value = integer ? parseInt(raw, 10) : Number(raw);
     return Number.isFinite(value) ? value : raw; // keep raw string so the server flags it
   }
 
-  function delayValue(raw) {
-    if (raw === undefined || String(raw).trim() === "") return 0;
-    var value = parseInt(raw, 10);
-    return Number.isFinite(value) ? value : raw;
+  function isEmptyContainer(value) {
+    if (Array.isArray(value)) return value.length === 0;
+    return value !== null && typeof value === "object" && Object.keys(value).length === 0;
   }
 
-  function modelObj(models, holder) {
-    var obj = { type: holder.type };
-    modelByType(models, holder.type).fields.forEach(function (field) {
-      var value = toNumber(holder.values[field.name], field.integer);
-      if (value !== undefined) obj[field.name] = value;
+  function serializeObject(node, value, type) {
+    var out = {};
+    var props = node.properties || {};
+    if (type) out.type = type;
+    Object.keys(props).forEach(function (key) {
+      if (key === "type" || !value || value[key] === undefined) return;
+      var child = serialize(props[key], value[key]);
+      // Blank scalars and toggled-on-but-untouched sections mean "unset", and an
+      // omitted key is what lets qilab apply its own default.
+      if (child !== undefined && !isEmptyContainer(child)) out[key] = child;
     });
-    return obj;
+    return out;
   }
 
-  function serialize() {
-    var doc = {};
-    if (state.ent.enabled) doc.entanglement_noise_model = modelObj(ENT_MODELS, state.ent);
-    doc.nodes = state.nodes.map(function (node) {
-      var out = {};
-      if (node.name && node.name.trim() !== "") out.name = node.name.trim();
-      out.node_type = node.node_type;
-      if (node.delays.enabled) {
-        var delays = {};
-        DELAY_KEYS.forEach(function (key) { delays[key] = delayValue(node.delays.values[key]); });
-        out.quantum_operations_delay_ns = delays;
+  function serialize(node, value) {
+    node = resolve(node);
+    switch (kindOf(node)) {
+      case "object":
+        return serializeObject(node, value);
+      case "union":
+        var branch = branchOf(node, value && value.type);
+        return serializeObject(branch, value, branchType(branch));
+      case "array":
+        return (value || []).map(function (item) { return serialize(node.items || {}, item); });
+      case "boolean":
+        return value === "" || value == null ? undefined : value === "true";
+      case "number":
+        return toNumber(value, node.type === "integer");
+      default:
+        return value === "" || value == null ? undefined : value;
+    }
+  }
+
+  if (loadDefaultBtn) {
+    loadDefaultBtn.addEventListener("click", function () {
+      if (!window.confirm("Replace the form with a blank default config? This does not save until you click Save.")) {
+        return;
       }
-      out.qubit_arrays = node.arrays.map(function (arr) {
-        return { num_qubits: toNumber(arr.num_qubits, true), noise_model: modelObj(QUBIT_MODELS, arr) };
-      });
-      return out;
+      state = load(defaultDoc);
+      if (statusEl) statusEl.textContent = "";
+      render();
     });
-    return doc;
   }
 
   form.addEventListener("submit", function (event) {
@@ -395,7 +544,7 @@
     fetch("/config/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(serialize()),
+      body: JSON.stringify(serialize(schema, state)),
     })
       .then(function () { window.location.href = "/?tab=config"; })
       .catch(function (err) {

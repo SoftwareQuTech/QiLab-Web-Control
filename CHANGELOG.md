@@ -2,6 +2,127 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+## [0.4.0] - 2026-07-28
+### Added
+- **Profiling tab**: qilab's `profile_durations.csv` and `profile_events.csv`
+  rendered as click-to-sort tables, with each file's resolved path, the env var
+  it came from, its size and modification time, and a download link. Sorting is
+  progressive enhancement in a single flat `app/static/telemetry.js` -- no
+  charting library and no build step. Column types are inferred from the data,
+  so qilab's new `Avg[ns]` column sorts numerically with no change here.
+- **Data acquisition tab**: whether the sink is enabled, the resolved JSONL
+  path, size, record count and last-modified time, a preview of the most recent
+  records, and a download link.
+- `GET /telemetry/download/{artifact}` for `profiler-durations`,
+  `profiler-events` and `daq`. The path parameter is a `str`-Enum, so no
+  caller-supplied path segment ever reaches the filesystem; symlinked paths and
+  non-regular files are refused. Downloads are byte-identical to what qilab
+  wrote, and the filename carries the file's mtime because the profiler CSVs are
+  overwritten on every run.
+- `GET /data-acquisition/preview`, returning the same `{path, updated, content}`
+  shape as `/logs` so the existing `pollLog()` drives it with no new JavaScript.
+- `app/telemetry.py`, mirroring qilab's own path resolvers -- including qilab's
+  asymmetry, where `QILAB_PROFILER_PATH` is a *base* without extension while
+  `QILAB_DAQ_PATH` is a complete filename.
+- Self-diagnosing notices for the three ways this silently shows nothing useful:
+  profiler data that predates the current run (it is written only at shutdown,
+  and truncated each time); a `QILAB_WEB_PROFILER_BASE` that does not match the
+  base compiled into the running qilab (the page names the files that *are*
+  present); and `QILAB_DAQ=1` resolving under `$HOME` while the qilab unit sets
+  `ProtectHome=true`, where the sink can never write.
+- New env vars: `QILAB_WEB_PROFILER_BASE`, `QILAB_WEB_DAQ_PREVIEW_LINES`,
+  `QILAB_WEB_DAQ_COUNT_MAX_BYTES`.
+
+### Fixed
+- **`EnvironmentFile=` was invisible to path resolution.** `systemctl show -p
+  Environment` reports only inline `Environment=` directives; systemd expands
+  `EnvironmentFile=` at exec time. The deployed image points both units at a
+  shared `/etc/default/qilab-global-env`, so every path resolved from the qilab
+  unit -- the existing **config path included** -- silently fell through to the
+  wrong tier, and the UI could read or edit a different file than the simulator,
+  with no error shown. `app/config/paths.py` now reads `EnvironmentFiles` and
+  layers those values *under* `Environment=`, matching systemd's precedence, and
+  reports which source a value came from.
+- The vendored `app/config/config.schema.json` had drifted badly from qilab's
+  schema (it still described a removed top-level `entanglement_noise_model`).
+  Re-vendored, which required updating the test fixtures and
+  `schema.default_document()` to the current config format -- the qubit-array
+  keys `qubit_decoherence_noise_model`, `gate_noise_model` and
+  `single_gate_delay_ns`, and the node-level `two_qubit_gate_noise_model`.
+- **The structured editor kept rendering the previous config format after the
+  schema was re-vendored**, and looked for all the world like a caching problem:
+  the new schema *was* inlined in the page, but `app/static/config.js` named
+  qilab's fields directly (`noise_model`, a top-level `entanglement_noise_model`,
+  a `$defs.entanglement_noise_model` that no longer exists), so it showed the old
+  form regardless. Worse, its Save button then POSTed that old shape, which the
+  schema now rejects. The renderer walks the schema instead: objects, arrays,
+  `$ref`, `oneOf` discriminated unions, enums and scalars each have one generic
+  case, and serialization is the inverse walk of the same tree, so `system`,
+  `entanglement_links`, `two_qubit_gate_noise_model`, `single_gate_delay_ns` and
+  the split qubit-array noise models appear with no JavaScript change -- as do
+  the next ones. Optional sections get a presence toggle, optional booleans a
+  three-state select (true / false / schema default), and blank optional fields
+  are omitted so qilab's own defaults still apply. Keys the current schema does
+  not define are listed in a notice rather than silently dropped on save.
+- `tests/test_schema_drift.py` fails if either generic file names a schema field
+  again, since nothing else does: the form still renders and the save still
+  succeeds while showing an obsolete format.
+- **Invisible download buttons.** `.btn` sets `color: #fff` and left the
+  background to a colour modifier, so the four bare `.btn` anchors -- both
+  profiler "Download CSV" links, the Profiling "Reload" link, and the DAQ
+  "Download JSONL" link -- were white text on a white card, underlined and
+  ignoring their padding. `.btn` now carries a neutral background of its own
+  (6.05:1 against white) plus the `display`/`text-decoration` an anchor needs,
+  so a missing modifier can no longer make a control unreadable.
+  `tests/test_styles.py` pins that, and that every modifier the template uses
+  exists.
+- Reporting "disabled" for the DAQ sink next to a populated file and a working
+  download button. An existing data file is now treated as evidence that
+  outranks the unit-environment inference, which is what happens when qilab is
+  run outside systemd.
+
+### Changed
+- The emitter's key order is derived from the schema (`emitter.key_order`)
+  instead of a hand-maintained list, which had gone stale in the same way as the
+  editor -- it still ranked `noise_model` and `single_gate_rotation`. Unknown keys
+  keep their insertion order and sort last, as before.
+- The page is served `Cache-Control: no-store`. It carries live state -- service
+  status, the current config, the inlined schema -- but previously went out with
+  no freshness information at all, so a browser could legitimately answer a
+  same-URL navigation from cache, including the redirect after "Reload schema".
+- Tabs are validated server-side against a known list; an unknown `?tab=` value
+  now renders Control *and* highlights it. Previously the nav's `!= 'config'`
+  test meant an unknown tab rendered the Control body with no link highlighted.
+- `pollLog()` takes an optional interval. The two log pollers keep their 100 ms
+  cadence; the telemetry preview uses 2000 ms, since it is subprocess-backed.
+- The telemetry snapshot is computed only on the two tabs that display it, so
+  the Control tab does not pay for three file stats and extra `systemctl` calls
+  on every render.
+
+## [0.3.0] - 2026-07-21
+### Added
+- `POST /update` now reloads the config schema cache right after the update
+  script runs, and reports the reload result alongside the binary-update
+  result, instead of requiring a separate manual "Reload schema" click.
+- "Start from default config" action in the Config tab, giving an explicit,
+  safe way to recover the structured editor when the current `nodes.yaml` no
+  longer validates against a newer schema.
+- `app/config/VENDORED_SCHEMA_VERSION` manifest plus a `verify:vendored_schema`
+  CI job that fails the release if the vendored `config.schema.json` fallback
+  drifts from the version recorded in the manifest.
+
+### Changed
+- Deployment instructions now set
+  `QILAB_WEB_SCHEMA_PATH=/opt/qilab/current/config.schema.json`: qilab's
+  release tarball ships `config.schema.json` next to the binary and
+  `update_release.sh`'s symlink swap keeps this path pointing at the schema
+  for whichever qilab version is actually deployed.
+- Refreshed the vendored `config.schema.json` fallback to match qilab's
+  current schema (adds the `system` section, drops the removed
+  `DEPOLARIZING`/`AMPLITUDE_DAMPING` noise models).
+
 ## [0.2.0] - 2026-06-17
 ### Added
 - Schema-driven structured config editor: the Config tab now renders typed fields,

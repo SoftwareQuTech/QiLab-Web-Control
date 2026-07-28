@@ -68,12 +68,26 @@ def reload_schema() -> Tuple[Optional[Dict[str, Any]], str, Optional[str]]:
 
 
 def default_document() -> Dict[str, Any]:
-    """A minimal valid config used as a blank starting point in the editor."""
+    """A minimal valid config used as a blank starting point in the editor.
+
+    Must satisfy every ``required`` key of the vendored schema -- a qubit array
+    needs all four, and both noise probabilities default to 0 (noiseless) so a
+    blank config is a well-defined no-noise simulation rather than an arbitrary
+    one. ``test_default_document_is_valid`` pins this.
+    """
     return {
         "nodes": [
             {
                 "qubit_arrays": [
-                    {"num_qubits": 1, "noise_model": {"type": "BASIC", "t2_value": 1000}}
+                    {
+                        "num_qubits": 1,
+                        "single_gate_delay_ns": 0,
+                        "qubit_decoherence_noise_model": {"type": "BASIC", "t2_value": 1000},
+                        "gate_noise_model": {
+                            "type": "DEPOLARIZING",
+                            "depolarizing_probability": 0,
+                        },
+                    }
                 ]
             }
         ]

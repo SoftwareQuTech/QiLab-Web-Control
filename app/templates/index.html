@@ -14,8 +14,10 @@
       </header>
 
       <nav class="tab-nav">
-        <a href="/?tab=control" class="tab-link {% if active_tab != 'config' %}tab-link-active{% endif %}">Control</a>
+        <a href="/?tab=control" class="tab-link {% if active_tab == 'control' %}tab-link-active{% endif %}">Control</a>
         <a href="/?tab=config" class="tab-link {% if active_tab == 'config' %}tab-link-active{% endif %}">Config</a>
+        <a href="/?tab=profiling" class="tab-link {% if active_tab == 'profiling' %}tab-link-active{% endif %}">Profiling</a>
+        <a href="/?tab=data" class="tab-link {% if active_tab == 'data' %}tab-link-active{% endif %}">Data acquisition</a>
       </nav>
 
       {% if active_tab == 'config' %}
@@ -30,10 +32,12 @@
           {% if schema_available %}
             <script id="qilab-schema" type="application/json">{{ schema_obj|tojson }}</script>
             <script id="qilab-document" type="application/json">{{ document_obj|tojson }}</script>
+            <script id="qilab-default-document" type="application/json">{{ default_document_obj|tojson }}</script>
             <form id="config-form" class="update-form">
               <div id="config-body"></div>
               <div class="config-actions">
                 <button type="submit" class="btn btn-upload">Save config + Restart service</button>
+                <button type="button" id="config-load-default" class="btn btn-restart">Start from default config</button>
               </div>
             </form>
             <div id="config-save-status" class="timestamp"></div>
@@ -84,6 +88,148 @@
         </section>
 
         <script src="/static/config.js" defer></script>
+      {% elif active_tab == 'profiling' %}
+        {% for notice in telemetry_notices %}
+          <section class="card notice-card">
+            <div class="label">Note</div>
+            <div class="notice">{{ notice }}</div>
+          </section>
+        {% endfor %}
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Profiler durations</span>
+            <a class="btn" href="/telemetry/download/profiler-durations">Download CSV</a>
+          </div>
+          <div class="timestamp">Path: {{ durations_status.path }}</div>
+          <div class="timestamp">Source: {{ durations_status.source }}</div>
+          {% if durations_status.exists %}
+            <div class="timestamp">
+              Modified: {{ durations_status.mtime }}{% if durations_status.age_human %} ({{ durations_status.age_human }}){% endif %} &middot; {{ durations_status.size_human }}
+            </div>
+          {% else %}
+            <div class="timestamp">Not present{% if durations_status.error %} &mdash; {{ durations_status.error }}{% endif %}</div>
+          {% endif %}
+
+          {% if durations_table.error %}
+            <div class="notice">{{ durations_table.error }}</div>
+          {% endif %}
+          {% if durations_table.rows %}
+            <div class="table-wrap">
+              <table class="data-table" data-sortable>
+                <thead>
+                  <tr>{% for column in durations_table.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr>
+                </thead>
+                <tbody>
+                  {% for row in durations_table.rows %}
+                    <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if durations_table.truncated %}
+              <div class="notice">Table truncated; download the CSV for the full data.</div>
+            {% endif %}
+          {% elif durations_status.exists and not durations_table.error %}
+            <div class="timestamp">No profiled events recorded.</div>
+          {% endif %}
+        </section>
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Profiler events</span>
+            <a class="btn" href="/telemetry/download/profiler-events">Download CSV</a>
+          </div>
+          <div class="timestamp">Path: {{ events_status.path }}</div>
+          {% if events_status.exists %}
+            <div class="timestamp">
+              Modified: {{ events_status.mtime }}{% if events_status.age_human %} ({{ events_status.age_human }}){% endif %} &middot; {{ events_status.size_human }}
+            </div>
+          {% else %}
+            <div class="timestamp">Not present{% if events_status.error %} &mdash; {{ events_status.error }}{% endif %}</div>
+          {% endif %}
+
+          {% if events_table.error %}
+            <div class="notice">{{ events_table.error }}</div>
+          {% endif %}
+          {% if events_table.rows %}
+            <div class="table-wrap">
+              <table class="data-table" data-sortable>
+                <thead>
+                  <tr>{% for column in events_table.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr>
+                </thead>
+                <tbody>
+                  {% for row in events_table.rows %}
+                    <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if events_table.truncated %}
+              <div class="notice">Table truncated; download the CSV for the full data.</div>
+            {% endif %}
+          {% elif events_status.exists %}
+            <div class="timestamp">No free-form profiler events recorded.</div>
+          {% endif %}
+        </section>
+
+        <section class="card">
+          <div class="label">Refresh</div>
+          <div class="timestamp">
+            Profiler data is written once per run, when qilab shuts down, so there is
+            nothing to poll. Reload after stopping or restarting the service.
+          </div>
+          <div class="actions">
+            <a class="btn" href="/?tab=profiling">Reload</a>
+          </div>
+        </section>
+
+        <script src="/static/telemetry.js" defer></script>
+      {% elif active_tab == 'data' %}
+        {% for notice in telemetry_notices %}
+          <section class="card notice-card">
+            <div class="label">Note</div>
+            <div class="notice">{{ notice }}</div>
+          </section>
+        {% endfor %}
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Data acquisition</span>
+            <span class="status status-{% if daq_enabled %}active{% else %}inactive{% endif %}">
+              {% if daq_enabled %}enabled{% else %}disabled{% endif %}
+            </span>
+          </div>
+          <div class="timestamp">{{ daq_enabled_reason }}</div>
+          <div class="timestamp">Path: {{ daq_status.path }}</div>
+          <div class="timestamp">Source: {{ daq_status.source }}</div>
+          {% if daq_status.exists %}
+            <div class="timestamp">
+              Modified: {{ daq_status.mtime }}{% if daq_status.age_human %} ({{ daq_status.age_human }}){% endif %}
+            </div>
+            <div class="timestamp">
+              Size: {{ daq_status.size_human }}
+              {% if daq_status.records >= 0 %}
+                &middot; {% if daq_status.records_exact %}{{ daq_status.records }} records{% else %}~{{ daq_status.records }} records (estimated from a sample){% endif %}
+              {% endif %}
+            </div>
+            <div class="actions">
+              <a class="btn" href="/telemetry/download/daq">Download JSONL</a>
+            </div>
+          {% else %}
+            <div class="timestamp">
+              No file yet{% if daq_status.error %} &mdash; {{ daq_status.error }}{% endif %}.
+            </div>
+          {% endif %}
+        </section>
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Most recent records</span>
+            <span class="timestamp" id="daq-preview-updated">Updated: never</span>
+          </div>
+          <pre class="log" id="daq-preview">Loading...</pre>
+        </section>
       {% else %}
         <section class="card">
           <div class="status-row">
@@ -172,43 +318,92 @@
         </section>
 
         <section class="card">
+          <div class="label">Update qilab_web_control (this app)</div>
+          <div class="timestamp">Installed version: {{ installed_version }}</div>
+          <form method="post" action="/self-update" enctype="multipart/form-data" class="update-form">
+            <label class="field">
+              <span>Version</span>
+              <input type="text" name="version" placeholder="0.3.0" required />
+            </label>
+            <label class="field">
+              <span>Wheel (.whl)</span>
+              <input type="file" name="wheel" accept=".whl" required />
+            </label>
+            <button type="submit" class="btn btn-upload">Upload + Self-update</button>
+          </form>
+          <div class="notice">
+            This restarts qilab-web-control itself. The new version is built and health-checked
+            in an isolated release directory before anything live is touched, and it
+            automatically rolls back if the restart doesn't come back up — but this page's
+            process may still briefly restart partway through. Watch the log below.
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="status-row">
+            <span class="label">Last self-update trigger</span>
+            {% if self_update_result.ok is none %}
+              <span class="status">{% if self_update_result.timestamp %}triggered{% else %}No run{% endif %}</span>
+            {% elif self_update_result.ok %}
+              <span class="status status-active">success</span>
+            {% else %}
+              <span class="status status-failed">failed</span>
+            {% endif %}
+          </div>
+          <div class="timestamp">Version: {{ self_update_result.version }} | Time: {{ self_update_result.timestamp }}</div>
+          <pre class="log">{{ self_update_result.output }}</pre>
+        </section>
+
+        <section class="card">
+          <div class="label">self_update.log (auto-refresh 100ms)</div>
+          <div class="timestamp"><span id="self-update-log-updated">Updated: {{ timestamp }}</span></div>
+          <pre class="log" id="self-update-log">Loading log output...</pre>
+        </section>
+
+        <section class="card">
           <div class="label">systemctl status</div>
           <pre class="log">{{ details }}</pre>
         </section>
       {% endif %}
     </main>
     <script>
-      const logElement = document.getElementById("qilab-log");
-      const updatedElement = document.getElementById("log-updated");
-
-      async function refreshLog() {
+      function pollLog(url, logElementId, updatedElementId, intervalMs) {
+        const logElement = document.getElementById(logElementId);
+        const updatedElement = document.getElementById(updatedElementId);
         if (!logElement || !updatedElement) {
           return;
         }
 
-        try {
-          const response = await fetch("/logs", { cache: "no-store" });
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+        async function refreshLog() {
+          try {
+            const response = await fetch(url, { cache: "no-store" });
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+
+            const payload = await response.json();
+            const wasNearBottom =
+              logElement.scrollHeight - logElement.clientHeight - logElement.scrollTop < 24;
+
+            logElement.textContent = payload.content || "";
+            updatedElement.textContent = `Updated: ${payload.updated}`;
+
+            if (wasNearBottom) {
+              logElement.scrollTop = logElement.scrollHeight;
+            }
+          } catch (err) {
+            logElement.textContent = `Log refresh error: ${err}`;
           }
-
-          const payload = await response.json();
-          const wasNearBottom =
-            logElement.scrollHeight - logElement.clientHeight - logElement.scrollTop < 24;
-
-          logElement.textContent = payload.content || "";
-          updatedElement.textContent = `Updated: ${payload.updated}`;
-
-          if (wasNearBottom) {
-            logElement.scrollTop = logElement.scrollHeight;
-          }
-        } catch (err) {
-          logElement.textContent = `Log refresh error: ${err}`;
         }
+
+        refreshLog();
+        setInterval(refreshLog, intervalMs || 100);
       }
 
-      refreshLog();
-      setInterval(refreshLog, 100);
+      pollLog("/logs", "qilab-log", "log-updated");
+      pollLog("/self-update/logs", "self-update-log", "self-update-log-updated");
+      // Telemetry is subprocess-backed; poll it far less aggressively than the logs.
+      pollLog("/data-acquisition/preview", "daq-preview", "daq-preview-updated", 2000);
     </script>
   </body>
 </html>

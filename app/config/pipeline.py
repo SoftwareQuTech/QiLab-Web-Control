@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from . import schema as schema_module
-from .emitter import emit_yaml
+from .emitter import emit_yaml, key_order
 
 SystemctlRunner = Callable[..., Any]
 
@@ -43,7 +43,7 @@ def save_config_doc(
         return _result(False, "Config rejected — does not match the qilab schema:\n" + details)
 
     try:
-        text = emit_yaml(doc)
+        text = emit_yaml(doc, key_order(schema))
     except Exception as exc:  # noqa: BLE001
         return _result(False, f"Failed to render config: {exc}")
 
