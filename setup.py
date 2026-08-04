@@ -7,7 +7,10 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={
-        "app": ["templates/*.html", "static/*"],
+        # deploy/: self_update.sh + the reference systemd unit. They ship inside
+        # the wheel so the deployed assets always match the installed version;
+        # see README.md "Deployment layout".
+        "app": ["templates/*.html", "static/*", "deploy/*"],
         "app.config": ["*.json", "VENDORED_SCHEMA_VERSION"],
     },
     install_requires=[

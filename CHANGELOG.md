@@ -2,7 +2,47 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.4.1] - 2026-07-28
+### Changed
+- **Deployment is now venv-free.** A release is a `pip install --target`
+  directory that the unit puts on `PYTHONPATH`, not a virtualenv:
+  `python3 -m venv` needs the `python3-venv` package, which is unavailable on
+  the legacy RT images. `pip` is the only requirement, and `--target` sidesteps
+  PEP 668 so no `--break-system-packages` is involved. The `current` symlink and
+  atomic-swap layout are unchanged; `releases/<version>/venv` becomes
+  `releases/<version>/site-packages`. This is now the only supported layout;
+  devices on an older one need a one-time migration, see
+  [docs/migration.md](docs/migration.md).
+- **Deployment assets ship inside the wheel** under `app/deploy/`
+  (`self_update.sh` plus a reference systemd unit), so what lands on a device
+  always matches the version installed and the rpi-img-gen layer no longer
+  carries its own copies. `QILAB_WEB_SELF_UPDATE_SCRIPT` now defaults to
+  `app/deploy/self_update.sh`. The example unit under `examples/service/` and
+  the top-level `scripts/` directory are gone: they were a third divergent copy
+  of the unit, and one of them advertised a mode where self-update could not
+  work at all.
+
+### Added
+- **Self-update preflight.** The script now refuses to write anything unless the
+  install is genuinely swappable: pip usable, `current` a symlink rather than a
+  real directory, and the unit reaching the app through `current` (checked
+  against both `ExecStart` and the environment, including `EnvironmentFile=`
+  contents). Previously, a system-wide `pip3 install --break-system-packages`
+  deployment -- what the image actually shipped -- would build a new release,
+  flip a symlink nothing read, restart successfully and log "Update successful"
+  while still running the old code.
+- **Offline self-update.** A new release is seeded by copying the live release's
+  `site-packages`, then the wheel is installed with `--no-deps`, so an update
+  needs no PyPI access. If a release changed dependencies the health check
+  catches it and the script retries a full networked install, aborting with the
+  live release intact if that also fails.
+- Self-update housekeeping after a verified-live swap: `self_update.sh` is
+  replanted from the new wheel, a changed unit file is flagged (not applied),
+  and releases older than the previous one are pruned.
+- A same-version reinstall builds into `releases/<version>-r2` instead of
+  deleting the directory it is running from.
+- [docs/image-layer.md](docs/image-layer.md) documents the rpi-img-gen layer
+  contract and a working `customize-hooks` implementation.
 
 ## [0.4.0] - 2026-07-28
 ### Added

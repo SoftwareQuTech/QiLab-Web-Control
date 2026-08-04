@@ -38,7 +38,7 @@ QILAB_LOG_LEVEL_OPTIONS = ("DEBUG", "ERROR", "OFF")
 # Self-update (updates qilab_web_control itself, not the qilab binary).
 QILAB_WEB_CONTROL_SERVICE = os.getenv("QILAB_WEB_CONTROL_SERVICE", "qilab-web-control.service")
 QILAB_WEB_SELF_UPDATE_SCRIPT = os.getenv(
-    "QILAB_WEB_SELF_UPDATE_SCRIPT", str(APP_ROOT.parent / "scripts" / "self_update.sh")
+    "QILAB_WEB_SELF_UPDATE_SCRIPT", str(APP_ROOT / "deploy" / "self_update.sh")
 )
 QILAB_WEB_SELF_UPDATE_UPLOAD_DIR = Path(
     os.getenv("QILAB_WEB_SELF_UPDATE_UPLOAD_DIR", "/tmp/qilab_web_control_uploads")

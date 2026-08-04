@@ -1,0 +1,45 @@
+# Reference unit for qilab_web_control, shipped inside the wheel so it can never
+# drift from the app version installed. Planted at
+# /etc/systemd/system/qilab-web-control.service by the image layer or by the
+# manual install in README.md.
+#
+# The app is reached ONLY through /opt/qilab-web-control/current. That
+# indirection is the update mechanism: self_update.sh builds a new release
+# directory, import-checks it, then flips this symlink. Point ExecStart or
+# PYTHONPATH at a concrete release (or at a system-wide pip install) and
+# self-update becomes a no-op — the script's preflight refuses to run in that
+# case rather than silently reporting success.
+
+[Unit]
+Description=Qilab Web Control
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/qilab-web-control/current
+
+# Shared with qilab.service. Listed before the inline Environment= lines so
+# those win on conflict, matching systemd's last-directive-wins order. The '-'
+# prefix keeps a missing file from failing startup.
+EnvironmentFile=-/etc/default/qilab-global-env
+
+# Releases are `pip install --target` directories, not virtualenvs: the legacy
+# RT images have no python3-venv package.
+Environment=PYTHONPATH=/opt/qilab-web-control/current/site-packages
+Environment=QILAB_SERVICE=qilab.service
+Environment=QILAB_UI_TITLE=Qilab Control
+Environment=QILAB_LOG_PATH=/var/log/qilab/qilab.log
+Environment=QILAB_UPDATE_SCRIPT=/opt/qilab/scripts/update_release.sh
+Environment=QILAB_WEB_SCHEMA_PATH=/opt/qilab/current/config.schema.json
+Environment=QILAB_WEB_SELF_UPDATE_SCRIPT=/opt/qilab-web-control/scripts/self_update.sh
+
+# Telemetry paths (QILAB_PROFILER_PATH, QILAB_DAQ_PATH, ...) are read from the
+# qilab unit's own environment, so they are deliberately not repeated here.
+ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
