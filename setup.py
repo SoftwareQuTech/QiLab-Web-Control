@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="qilab_web_control",
-    version="0.4.0",
+    version="0.4.1",
     description="Minimal FastAPI + Jinja2 UI to control qilab",
     packages=find_packages(),
     include_package_data=True,
