@@ -8,7 +8,7 @@ set -euo pipefail
 # Usage:
 #   sudo ./self_update.sh <version> <wheel_path>
 # Example:
-#   sudo ./self_update.sh 0.4.0 /tmp/qilab_web_control-0.4.0-py3-none-any.whl
+#   sudo ./self_update.sh 0.4.2 /tmp/qilab_web_control-0.4.2-py3-none-any.whl
 #
 # Layout it maintains (see README.md "Deployment layout"):
 #   /opt/qilab-web-control/current -> releases/<version>
@@ -37,7 +37,7 @@ set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
   echo "Usage: $0 <version> <wheel_path>"
-  echo "Example: $0 0.4.0 /tmp/qilab_web_control-0.4.0-py3-none-any.whl"
+  echo "Example: $0 0.4.2 /tmp/qilab_web_control-0.4.2-py3-none-any.whl"
   exit 1
 fi
 
@@ -50,7 +50,7 @@ RELEASES_DIR="$INSTALL_ROOT/releases"
 CURRENT_LINK="$INSTALL_ROOT/current"
 SCRIPT_INSTALL_PATH="$INSTALL_ROOT/scripts/self_update.sh"
 UNIT_INSTALL_PATH="/etc/systemd/system/$SERVICE_NAME"
-LOG_DIR="/var/log/qilab-web-control"
+LOG_DIR="${QILAB_WEB_CONTROL_LOG_DIR:-/var/log/qilab-web-control}"
 LOG_FILE="$LOG_DIR/self_update.log"
 
 if [[ $EUID -ne 0 ]]; then
@@ -60,6 +60,22 @@ fi
 
 if [[ ! -f "$WHEEL_PATH" ]]; then
   echo "Wheel not found: $WHEEL_PATH"
+  exit 1
+fi
+
+# pip parses a wheel's filename per PEP 427 (name-version-python-abi-platform.whl)
+# and rejects anything else before reading a byte of it, so a caller that renamed
+# the upload — added a unique prefix or suffix, say — fails deep inside pip with a
+# confusing error. Catch it here instead. Uniqueness belongs on a containing
+# directory, which is what the /self-update route does.
+# A wheel filename has exactly 5 dash-separated components, or 6 with an
+# optional build tag; the distribution name itself may not contain a dash (it is
+# normalised to '_'), so counting them is an exact check rather than a heuristic.
+WHEEL_NAME="$(basename "$WHEEL_PATH")"
+IFS='-' read -ra WHEEL_PARTS <<<"${WHEEL_NAME%.whl}"
+if [[ "$WHEEL_NAME" != *.whl || ${#WHEEL_PARTS[@]} -lt 5 || ${#WHEEL_PARTS[@]} -gt 6 ]]; then
+  echo "Not a PEP 427 wheel filename: $WHEEL_NAME"
+  echo "Expected <name>-<version>[-<build>]-<python>-<abi>-<platform>.whl"
   exit 1
 fi
 
@@ -178,6 +194,7 @@ rm -rf "$TARGET_DIR"
 mkdir -p "$TARGET_SITE_PACKAGES"
 
 installed=0
+retry_with_dependencies=0
 if [[ -n "$PREV_TARGET" && -d "$PREV_TARGET/site-packages" ]]; then
   log "Seeding dependencies from the live release ($PREV_TARGET) — no network needed"
   cp -a "$PREV_TARGET/site-packages/." "$TARGET_SITE_PACKAGES/"
@@ -187,13 +204,25 @@ if [[ -n "$PREV_TARGET" && -d "$PREV_TARGET/site-packages" ]]; then
   rm -rf "$TARGET_SITE_PACKAGES/app" "$TARGET_SITE_PACKAGES"/qilab_web_control-*.dist-info
 
   log "Installing wheel with --no-deps"
-  if pip_install_into "$TARGET_SITE_PACKAGES" --no-deps && health_check "$TARGET_SITE_PACKAGES"; then
+  # A pip failure here is never a dependency problem: --no-deps resolves nothing,
+  # so pip can only fail on the wheel itself. Don't retry with the network and
+  # don't blame dependencies for it — report what actually broke.
+  if ! pip_install_into "$TARGET_SITE_PACKAGES" --no-deps; then
+    log "Update aborted: pip rejected the wheel (see its error above)."
+    log "  Live release left untouched. Nothing about this is network-related."
+    exit 1
+  fi
+
+  if health_check "$TARGET_SITE_PACKAGES"; then
     installed=1
   else
+    # Installed fine but does not import: the seeded dependencies are the wrong
+    # versions for this release. That is the one case a full install can fix.
     log "Seeded install does not import — this release's dependencies have changed."
     log "Retrying as a full install, which requires network access to PyPI."
     rm -rf "$TARGET_SITE_PACKAGES"
     mkdir -p "$TARGET_SITE_PACKAGES"
+    retry_with_dependencies=1
   fi
 fi
 
@@ -201,8 +230,10 @@ if [[ $installed -eq 0 ]]; then
   log "Installing wheel with dependencies"
   if ! pip_install_into "$TARGET_SITE_PACKAGES"; then
     log "Update aborted: pip install failed. Live release left untouched."
-    log "  If this device has no PyPI access, this release cannot be installed"
-    log "  over the air because it changed dependencies — deploy a new image."
+    if [[ $retry_with_dependencies -eq 1 ]]; then
+      log "  This release changed dependencies, so it cannot be installed over"
+      log "  the air on a device without PyPI access — deploy a new image."
+    fi
     exit 1
   fi
 

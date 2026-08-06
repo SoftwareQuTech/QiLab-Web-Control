@@ -152,6 +152,25 @@ def _installed_version() -> str:
         return "unknown (not installed as a package)"
 
 
+def _prune_upload_dirs(upload_root: Path, keep: int = 3) -> None:
+    """Drop all but the newest `keep` upload directories.
+
+    Deliberately keeps a few rather than clearing the lot: an update launched
+    moments ago is still reading its wheel from the newest directory.
+    """
+    try:
+        entries = sorted(
+            (child for child in upload_root.iterdir() if child.is_dir()),
+            key=lambda child: child.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return
+
+    for stale in entries[keep:]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
 def _run_self_update_script(version: str, wheel_path: Path) -> None:
     """Launch self_update.sh detached, in its own systemd cgroup.
 
@@ -389,13 +408,24 @@ async def self_update(
         await wheel.close()
         return RedirectResponse(url="/", status_code=303)
 
-    QILAB_WEB_SELF_UPDATE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(wheel.filename or "").name
+    if not safe_name.endswith(".whl"):
+        LAST_SELF_UPDATE_TRIGGER.update(
+            ok=False,
+            timestamp=now,
+            version=version,
+            output=f"Self-update aborted: {safe_name or 'the upload'} is not a .whl file.",
+        )
+        await wheel.close()
+        return RedirectResponse(url="/", status_code=303)
 
-    safe_name = Path(wheel.filename or "qilab_web_control.whl").name
-    upload_target = Path(
-        tempfile.mkstemp(
-            prefix=f"qilab-web-control-{version}-", suffix=f"-{safe_name}", dir=QILAB_WEB_SELF_UPDATE_UPLOAD_DIR
-        )[1]
+    # The wheel's own filename must survive verbatim: pip parses it per PEP 427
+    # (name-version-python-abi-platform.whl) and rejects anything else outright,
+    # so uniqueness goes on a containing directory instead of the file name.
+    QILAB_WEB_SELF_UPDATE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _prune_upload_dirs(QILAB_WEB_SELF_UPDATE_UPLOAD_DIR)
+    upload_target = (
+        Path(tempfile.mkdtemp(prefix=f"{version}-", dir=QILAB_WEB_SELF_UPDATE_UPLOAD_DIR)) / safe_name
     )
 
     try:

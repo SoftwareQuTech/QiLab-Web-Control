@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.2] - 2026-08-06
+### Fixed
+- **Self-update could never install a wheel.** `/self-update` staged the upload
+  with `tempfile.mkstemp`, producing
+  `qilab-web-control-<version>-<token>-<original name>.whl`. pip parses wheel
+  filenames per PEP 427 and rejects anything else before opening the file, so
+  every attempt failed with "is not a valid wheel filename" — including on
+  0.4.1, where the layout itself was already correct. The upload now goes into a
+  unique *directory* and keeps its filename verbatim; non-`.whl` uploads are
+  refused up front, and `self_update.sh` validates the filename itself so a
+  future caller that renames it fails with an explanation rather than pip's
+  error. Upload directories are pruned to the newest three.
+- Self-update no longer misreports why an install failed. A pip failure in the
+  offline path was reported as "dependencies have changed", followed by a
+  pointless networked retry and a closing suggestion to reflash the image — none
+  of which applied, since `--no-deps` resolves nothing and can therefore only
+  fail on the wheel itself. Only an install that succeeds but then fails to
+  import triggers the networked retry now.
+
+### Added
+- `QILAB_WEB_CONTROL_LOG_DIR` overrides the self-update log directory, so the
+  script can be exercised outside a real deployment.
+
 ## [0.4.1] - 2026-07-28
 ### Changed
 - **Deployment is now venv-free.** A release is a `pip install --target`

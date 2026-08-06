@@ -54,9 +54,9 @@ mmdebstrap:
     - |
       set -eu
       echo "Installing web-control-server..."
-      WHL_PATH="${WEB_CONTROL_WHL_PATH:-$SRCROOT/files/qilab_web_control-0.4.0-py3-none-any.whl}"
+      WHL_PATH="${WEB_CONTROL_WHL_PATH:-$SRCROOT/files/qilab_web_control-0.4.2-py3-none-any.whl}"
       WHL_NAME="$(basename "$WHL_PATH")"
-      # qilab_web_control-0.4.0-py3-none-any.whl -> 0.4.0
+      # qilab_web_control-0.4.2-py3-none-any.whl -> 0.4.2
       VERSION="$(echo "$WHL_NAME" | cut -d- -f2)"
 
       if [ ! -f "$WHL_PATH" ]; then

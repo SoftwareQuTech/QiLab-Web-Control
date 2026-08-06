@@ -18,10 +18,10 @@ over atomically, with a rollback that is just "point the symlink back".
 
 ```
 /opt/qilab-web-control/
-├── current -> releases/0.4.0             # the ONLY path the unit references
+├── current -> releases/0.4.2             # the ONLY path the unit references
 ├── releases/
-│   ├── 0.3.0/site-packages/              # previous release, kept for rollback
-│   └── 0.4.0/site-packages/              # live release (app + its dependencies)
+│   ├── 0.4.1/site-packages/              # previous release, kept for rollback
+│   └── 0.4.2/site-packages/              # live release (app + its dependencies)
 └── scripts/
     └── self_update.sh                    # outside releases/: survives any swap
 /var/log/qilab-web-control/self_update.log
@@ -73,7 +73,7 @@ path out of an older deployment — see [docs/migration.md](docs/migration.md)
 first if `/opt/qilab-web-control` does not already look like the tree above.
 
 ```bash
-VERSION=0.4.0
+VERSION=0.4.2
 ROOT=/opt/qilab-web-control
 SP="$ROOT/releases/$VERSION/site-packages"
 
@@ -190,7 +190,7 @@ so the script's preflight declines and logs why.
 ## Maintainer release workflow
 
 1. Refresh the vendored schema fallback (`app/config/config.schema.json`) from the qilab tag this release targets, and update `app/config/VENDORED_SCHEMA_VERSION` to match its `x-qilab-schema-version`. `verify:vendored_schema` in CI fails the release if these two are out of sync — this is the fallback used whenever `QILAB_WEB_SCHEMA_PATH` isn't set, so keep it deliberately current rather than letting it silently drift from qilab's schema.
-2. Update `CHANGELOG.md` with a section for the version you are releasing (for example `## [0.4.1] - 2026-08-04`).
+2. Update `CHANGELOG.md` with a section for the version you are releasing (for example `## [0.4.2] - 2026-08-06`).
 3. Ensure `setup.py` `version` exactly matches the release tag version without the `v` prefix.
 4. Push the version tag (format `vX.Y.Z`) to trigger build + GitLab release publication.
 
