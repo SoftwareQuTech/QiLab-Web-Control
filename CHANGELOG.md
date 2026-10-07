@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.4.3] - 2026-10-07
 ### Security
 - **The `version` form field could escape the release directory as root.**
   `/self-update` and `/update` passed it unchecked into temp-file prefixes and to

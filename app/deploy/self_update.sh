@@ -11,7 +11,7 @@ set -euo pipefail
 # Usage:
 #   sudo ./self_update.sh <version> <wheel_path>
 # Example:
-#   sudo ./self_update.sh 0.4.2 /tmp/qilab_web_control-0.4.2-py3-none-any.whl
+#   sudo ./self_update.sh 0.4.3 /tmp/qilab_web_control-0.4.3-py3-none-any.whl
 #
 # Layout it maintains (see README.md "Deployment layout"):
 #   /opt/qilab-web-control/current -> releases/<version>
@@ -40,7 +40,7 @@ set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
   echo "Usage: $0 <version> <wheel_path>"
-  echo "Example: $0 0.4.2 /tmp/qilab_web_control-0.4.2-py3-none-any.whl"
+  echo "Example: $0 0.4.3 /tmp/qilab_web_control-0.4.3-py3-none-any.whl"
   exit 1
 fi
 
