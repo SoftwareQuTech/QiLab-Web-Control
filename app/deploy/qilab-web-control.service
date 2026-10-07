@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 # Reference unit for qilab_web_control, shipped inside the wheel so it can never
 # drift from the app version installed. Planted at
 # /etc/systemd/system/qilab-web-control.service by the image layer or by the

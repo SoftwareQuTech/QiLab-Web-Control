@@ -1,8 +1,12 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """Schema rules + the drift guard: qilab's schema must match the vendored copy
 and validate qilab's known-good configs."""
 
 import copy
 import json
+import os
 from pathlib import Path
 
 import jsonschema
@@ -11,8 +15,14 @@ import yaml
 
 from app.config import schema as schema_module
 
-# qilab's source-of-truth schema, if this checkout is alongside the qilab repo.
-QILAB_SCHEMA = Path("/home/mrkolev/work/qilab/docs/config.schema.json")
+# qilab's source-of-truth schema, if a qilab checkout sits next to this one
+# (override with QILAB_REPO_SCHEMA).
+QILAB_SCHEMA = Path(
+    os.getenv(
+        "QILAB_REPO_SCHEMA",
+        str(Path(__file__).resolve().parents[2] / "qilab" / "docs" / "config.schema.json"),
+    )
+)
 
 # What qilab's create_default_config() writes (config_loader.cpp).
 QILAB_DEFAULT_CONFIG = """

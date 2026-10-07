@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 set -euo pipefail
 
 # Self-update mechanism for qilab_web_control (mirrors qilab's own
@@ -55,6 +58,13 @@ LOG_FILE="$LOG_DIR/self_update.log"
 
 if [[ $EUID -ne 0 ]]; then
   echo "This script must be run as root (use sudo)."
+  exit 1
+fi
+
+# VERSION becomes a directory under releases/ that this script `rm -rf`s, so it
+# must never contain a path separator or "..". Same rule as the /self-update route.
+if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9A-Za-z]+){0,4}$ ]]; then
+  echo "Invalid version: $VERSION (expected e.g. 0.4.2)"
   exit 1
 fi
 

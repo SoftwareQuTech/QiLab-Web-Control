@@ -10,3 +10,6 @@ venv/
 dist/
 build/
 
+
+# Local AI-assistant prompts, not part of the project
+.github/prompts/

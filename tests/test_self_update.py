@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 def test_self_update_requires_root(client, monkeypatch):
     monkeypatch.setattr(client._main.os, "geteuid", lambda: 1000)
     popen_calls = []

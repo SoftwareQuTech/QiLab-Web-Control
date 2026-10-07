@@ -1,3 +1,6 @@
+// Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+// SPDX-License-Identifier: BSD-3-Clause-Clear
+
 /* Click-to-sort for the server-rendered telemetry tables.
  *
  * Progressive enhancement only: the table already arrives sorted usefully, so

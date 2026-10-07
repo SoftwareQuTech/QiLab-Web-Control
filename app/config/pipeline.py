@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """The save pipeline: validate -> emit -> atomic write -> restart -> report.
 
 The live config file is only ever touched after schema validation passes and the

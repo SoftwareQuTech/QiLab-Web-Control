@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """Pure unit tests for app.telemetry: resolution, parsing, status, diagnostics.
 
 No TestClient and no systemd -- the resolvers are split so the interesting logic

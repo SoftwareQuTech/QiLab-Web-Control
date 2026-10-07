@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """Surface qilab's telemetry artifacts -- profiler CSVs and the DAQ JSONL -- read-only.
 
 Path resolution mirrors qilab's own C++ resolvers, including an asymmetry qilab

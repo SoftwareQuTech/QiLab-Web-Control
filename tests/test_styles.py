@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """Guard the one CSS mistake that renders a control invisible rather than ugly.
 
 `.btn` sets `color: #fff` and leaves the background to a modifier, so a `.btn`

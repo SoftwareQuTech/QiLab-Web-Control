@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """Resolve the qilab config file path the same way qilab itself does.
 
 qilab resolves its config path (see qilab ``get_default_config_path``) as:

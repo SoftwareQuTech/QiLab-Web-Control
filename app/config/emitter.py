@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """Emit a config document as qilab-dialect YAML.
 
 qilab uses a hand-rolled indentation parser, NOT a full YAML reader. The dialect
@@ -73,7 +76,12 @@ def _scalar(value: Any) -> str:
     if isinstance(value, float):
         # repr is round-trippable; qilab parses both "1000" and "0.001" / "1e-05".
         return repr(value)
-    return str(value)
+    text = str(value)
+    # The dialect has no quoting, so a line break inside a value (e.g. a node
+    # name) would be read back as extra keys -- refuse rather than inject them.
+    if any(ch in text for ch in "\r\n\x00"):
+        raise ValueError(f"value {text!r} contains a line break or NUL")
+    return text
 
 
 def _emit_mapping(mapping: Dict[str, Any], indent: int, lines: List[str], order: Dict[str, int]) -> None:

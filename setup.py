@@ -1,9 +1,15 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 from setuptools import find_packages, setup
 
 setup(
     name="qilab_web_control",
     version="0.4.2",
     description="Minimal FastAPI + Jinja2 UI to control qilab",
+    author="Milen Kolev, Stephanie Wehner",
+    license="BSD-3-Clause-Clear",
+    license_files=["LICENSE"],
     packages=find_packages(),
     include_package_data=True,
     package_data={

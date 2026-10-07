@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 def test_config_tab_renders_structured_form(client):
     response = client.get("/?tab=config")
     assert response.status_code == 200

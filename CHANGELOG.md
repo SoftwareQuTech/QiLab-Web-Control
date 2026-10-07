@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+### Security
+- **The `version` form field could escape the release directory as root.**
+  `/self-update` and `/update` passed it unchecked into temp-file prefixes and to
+  the update scripts, and `self_update.sh` builds and `rm -rf`s
+  `releases/<version>`, so a value such as `../../..` pointed that at `/`. Both
+  routes and `self_update.sh` now accept only dot-separated alphanumerics
+  (`0.4.2`, `v0.4.2`, `0.5.0rc1`).
+- **Cross-site requests can no longer drive the UI.** Every POST runs as root, and
+  any page an operator had open could submit a form or a no-cors `fetch` to the
+  device, including a wheel upload to `/self-update`. Non-GET requests whose
+  `Origin`/`Referer` does not match `Host`, or that carry
+  `Sec-Fetch-Site: cross-site`, are now refused with 403. Clients that send
+  neither header, like `curl`, are unaffected.
+- Upload directories must be real directories owned by the service's user and
+  not group- or world-writable. The defaults live under `/tmp`, where a local
+  user could pre-create them and swap an upload before the root-run script read
+  it.
+- The config emitter refuses values containing a line break or NUL. The qilab
+  dialect has no quoting, so a node name with a newline was written out as extra
+  config keys.
+
+### Changed
+- Released under the Clear BSD License (`BSD-3-Clause-Clear`). Added `LICENSE`
+  and a copyright and SPDX header to every source file; the wheel and sdist
+  ship `LICENSE`.
+- `QILAB_UPDATE_SCRIPT` now defaults to `/opt/qilab/scripts/update_release.sh`,
+  matching the reference unit, instead of a developer's home directory.
+
 ## [0.4.2] - 2026-08-06
 ### Fixed
 - **Self-update could never install a wheel.** `/self-update` staged the upload

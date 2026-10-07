@@ -1,3 +1,6 @@
+// Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+// SPDX-License-Identifier: BSD-3-Clause-Clear
+
 /* Schema-driven config editor for qilab_web_control.
  *
  * Reads qilab's JSON Schema and the current config document (injected as

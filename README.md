@@ -223,6 +223,42 @@ dependency bumps deliberate for that reason.
   - **The profiler base name is compiled into qilab** (`PROF_SAVE_DATA("profile")`), so the app cannot discover it. If it ever differs, set `QILAB_WEB_PROFILER_BASE`; when the expected file is missing the page names the bases it *did* find in that directory.
   - **DAQ is opt-in** via `QILAB_DAQ=1` on the qilab unit — compared against that exact string, so `true`/`yes` count as disabled. If the sink resolves under `$HOME` while the qilab unit sets `ProtectHome=true`, it can never write there; the page flags that specific combination.
   - Optional tuning: `QILAB_WEB_DAQ_PREVIEW_LINES` (default 5), `QILAB_WEB_DAQ_COUNT_MAX_BYTES` (default 8 MiB — above this the record count is estimated from a sample rather than scanning the whole file, and the UI marks it as an estimate).
-- This server is intentionally minimal and has **no authentication**, while binding `0.0.0.0:8000` as root. The telemetry download endpoints therefore expose research data to anyone who can reach the port, as the log view and config editor already do. Bind it to a trusted interface, or put it behind an authenticating reverse proxy, before exposing it to any untrusted network.
-</content>
-</invoke>
+## Security
+
+This server is intentionally minimal and has **no authentication**, while
+binding `0.0.0.0:8000` as root. Anyone who can reach the port can start and stop
+qilab, rewrite its config, read logs and research data, and upload a binary or
+wheel that then runs as root. Treat network access to the port as root access to
+the device: bind it to a trusted interface or a lab-only network, or put it
+behind an authenticating reverse proxy, before exposing it to any untrusted
+network.
+
+What the app does defend against:
+
+- **Cross-site requests.** Non-GET requests whose `Origin`/`Referer` does not
+  match the `Host` header, or that a browser marks `Sec-Fetch-Site: cross-site`,
+  are refused with 403. So a web page an operator has open cannot drive the UI.
+  A reverse proxy in front of the app must forward the original `Host` header.
+- **Path injection through the version field.** Versions are restricted to
+  dot-separated alphanumerics (`0.4.2`, `v0.4.2`, `0.5.0rc1`), in the routes and
+  again in `self_update.sh`.
+- **Hijacked upload directories.** An upload directory that is a symlink, owned
+  by another user, or group/world-writable is refused.
+
+It does not defend against DNS rebinding, which an authenticating proxy or a
+host allow-list in front of the app does.
+
+## License
+Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner.
+
+qilab_web_control is released under the [Clear BSD License](LICENSE) (SPDX: `BSD-3-Clause-Clear`). This license grants no patent rights. Every source file carries the matching SPDX header.
+
+### Third-party software
+Dependencies are not bundled with this package. `pip` installs them from PyPI, and they remain under their own licenses:
+- [FastAPI](https://github.com/fastapi/fastapi) and its dependency [Starlette](https://github.com/encode/starlette): MIT License / BSD 3-Clause License.
+- [Jinja2](https://github.com/pallets/jinja): BSD 3-Clause License.
+- [Uvicorn](https://github.com/encode/uvicorn): BSD 3-Clause License.
+- [python-multipart](https://github.com/Kludex/python-multipart): Apache License 2.0.
+- [PyYAML](https://github.com/yaml/pyyaml): MIT License.
+- [jsonschema](https://github.com/python-jsonschema/jsonschema): MIT License.
+- [pytest](https://github.com/pytest-dev/pytest) and [HTTPX](https://github.com/encode/httpx) (tests only, not shipped): MIT License / BSD 3-Clause License.

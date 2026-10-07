@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 from __future__ import annotations
 
 import os
@@ -10,7 +13,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -31,9 +35,15 @@ QILAB_SERVICE = os.getenv("QILAB_SERVICE", "qilab.service")
 UI_TITLE = os.getenv("QILAB_UI_TITLE", "Qilab Control")
 QILAB_LOG_PATH = Path(os.getenv("QILAB_LOG_PATH", "/var/log/qilab/qilab.log"))
 QILAB_LOG_LINES = int(os.getenv("QILAB_LOG_LINES", "200"))
-QILAB_UPDATE_SCRIPT = os.getenv("QILAB_UPDATE_SCRIPT", "/home/mrkolev/work/qilab/scripts/update_release.sh")
+QILAB_UPDATE_SCRIPT = os.getenv("QILAB_UPDATE_SCRIPT", "/opt/qilab/scripts/update_release.sh")
 QILAB_UPLOAD_DIR = Path(os.getenv("QILAB_UPLOAD_DIR", "/tmp/qilab_uploads"))
 QILAB_LOG_LEVEL_OPTIONS = ("DEBUG", "ERROR", "OFF")
+
+# The version field reaches temp-file prefixes and, as root, the update scripts,
+# where self_update.sh builds and `rm -rf`s "releases/<version>". Restricting it
+# to dot-separated alphanumerics makes path separators and ".." impossible.
+VERSION_PATTERN = re.compile(r"v?[0-9]+(?:\.[0-9A-Za-z]+){0,4}")
+VERSION_MAX_LENGTH = 64
 
 # Self-update (updates qilab_web_control itself, not the qilab binary).
 QILAB_WEB_CONTROL_SERVICE = os.getenv("QILAB_WEB_CONTROL_SERVICE", "qilab-web-control.service")
@@ -61,6 +71,26 @@ QILAB_WEB_DAQ_COUNT_MAX_BYTES = int(
 
 app = FastAPI(title=UI_TITLE)
 app.mount("/static", StaticFiles(directory=str(APP_ROOT / "static")), name="static")
+
+
+@app.middleware("http")
+async def reject_cross_origin_writes(request: Request, call_next):
+    """Refuse state-changing requests that a browser sent from another site.
+
+    Every POST here runs as root, and HTML forms plus no-cors fetches can POST
+    multipart and text bodies cross-origin without a preflight. Without this, any
+    web page an operator opens could upload a wheel to /self-update. Browsers
+    always send Origin (or Sec-Fetch-Site) on such requests; clients that send
+    neither, like curl, are not a CSRF vector and pass through.
+    """
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        if request.headers.get("sec-fetch-site", "") == "cross-site":
+            return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
+        source = request.headers.get("origin") or request.headers.get("referer")
+        if source and urlsplit(source).netloc != request.headers.get("host", ""):
+            return JSONResponse({"detail": "Cross-origin request refused."}, status_code=403)
+    return await call_next(request)
+
 
 LAST_UPDATE_RESULT = {
     "ok": None,
@@ -134,6 +164,29 @@ def _tail_log(log_path: Path, max_lines: int) -> str:
         return "\n".join(lines[-max_lines:])
     except Exception as exc:
         return f"Failed to read log file: {exc}"
+
+
+def _version_error(version: str) -> Optional[str]:
+    if len(version) <= VERSION_MAX_LENGTH and VERSION_PATTERN.fullmatch(version):
+        return None
+    return f"Invalid version '{version[:VERSION_MAX_LENGTH]}'. Expected e.g. 0.4.2 or v0.4.2."
+
+
+def _secure_upload_dir(upload_root: Path) -> None:
+    """Create ``upload_root`` for root-only use, refusing one someone else controls.
+
+    The defaults live under /tmp. A local user who pre-creates that directory (or
+    a symlink in its place) could otherwise swap the upload between this write
+    and the root-run update script reading it.
+    """
+    upload_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = upload_root.lstat()
+    if not stat.S_ISDIR(st.st_mode):
+        raise PermissionError(f"{upload_root} is not a real directory (symlink?).")
+    if st.st_uid != os.getuid():
+        raise PermissionError(f"{upload_root} is owned by uid {st.st_uid}, not this process.")
+    if st.st_mode & 0o022:
+        raise PermissionError(f"{upload_root} is group- or world-writable.")
 
 
 def _run_update_script(version: str, tarball_path: Path) -> subprocess.CompletedProcess[str]:
@@ -360,7 +413,19 @@ async def update_binary(
         await tarball.close()
         return RedirectResponse(url="/", status_code=303)
 
-    QILAB_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    upload_error = _version_error(version)
+    if upload_error is None:
+        try:
+            _secure_upload_dir(QILAB_UPLOAD_DIR)
+        except OSError as exc:
+            upload_error = f"Unsafe upload directory: {exc}"
+    if upload_error:
+        LAST_UPDATE_RESULT["ok"] = False
+        LAST_UPDATE_RESULT["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        LAST_UPDATE_RESULT["version"] = version[:VERSION_MAX_LENGTH]
+        LAST_UPDATE_RESULT["output"] = f"Update aborted: {upload_error}"
+        await tarball.close()
+        return RedirectResponse(url="/", status_code=303)
 
     safe_name = Path(tarball.filename or "qilab.tar.gz").name
     upload_target = Path(
@@ -408,6 +473,17 @@ async def self_update(
         await wheel.close()
         return RedirectResponse(url="/", status_code=303)
 
+    version_error = _version_error(version)
+    if version_error:
+        LAST_SELF_UPDATE_TRIGGER.update(
+            ok=False,
+            timestamp=now,
+            version=version[:VERSION_MAX_LENGTH],
+            output=f"Self-update aborted: {version_error}",
+        )
+        await wheel.close()
+        return RedirectResponse(url="/", status_code=303)
+
     safe_name = Path(wheel.filename or "").name
     if not safe_name.endswith(".whl"):
         LAST_SELF_UPDATE_TRIGGER.update(
@@ -422,7 +498,17 @@ async def self_update(
     # The wheel's own filename must survive verbatim: pip parses it per PEP 427
     # (name-version-python-abi-platform.whl) and rejects anything else outright,
     # so uniqueness goes on a containing directory instead of the file name.
-    QILAB_WEB_SELF_UPDATE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _secure_upload_dir(QILAB_WEB_SELF_UPDATE_UPLOAD_DIR)
+    except OSError as exc:
+        LAST_SELF_UPDATE_TRIGGER.update(
+            ok=False,
+            timestamp=now,
+            version=version,
+            output=f"Self-update aborted: unsafe upload directory: {exc}",
+        )
+        await wheel.close()
+        return RedirectResponse(url="/", status_code=303)
     _prune_upload_dirs(QILAB_WEB_SELF_UPDATE_UPLOAD_DIR)
     upload_target = (
         Path(tempfile.mkdtemp(prefix=f"{version}-", dir=QILAB_WEB_SELF_UPDATE_UPLOAD_DIR)) / safe_name

@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Quantum Internet Alliance, Delft University of Technology, Milen Kolev, Stephanie Wehner
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
 """Load qilab's JSON Schema and validate config documents against it.
 
 The schema is qilab's source of truth (``<qilab>/docs/config.schema.json``). The
